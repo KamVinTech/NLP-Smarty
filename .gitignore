@@ -1,0 +1,44 @@
+# ── Virtual Environment ────────────────────────────────────────────────────────
+NLP-start/
+
+# ── Python Bytecode & Cache ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# ── Distribution / Build ───────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+*.egg
+
+# ── spaCy Models (downloaded at runtime) ──────────────────────────────────────
+en_core_web_*/
+
+# ── HuggingFace / Torch Cache ─────────────────────────────────────────────────
+.cache/
+~/.cache/huggingface/
+*.pt
+*.bin
+*.safetensors
+
+# ── Environment & Secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+
+# ── Jupyter Notebooks Checkpoints ─────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Test & Coverage Artifacts ─────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── IDE & OS Noise ────────────────────────────────────────────────────────────
+.DS_Store
+.vscode/
+.idea/
+Thumbs.db
