@@ -1,0 +1,21 @@
+# Python virtual environment
+NLP-start/**
+
+# Node dependencies (bundled devDependencies not needed at runtime)
+node_modules/**
+
+# TypeScript source — only compiled JS in out/ is needed
+src/**
+tsconfig.json
+
+# Test & benchmark files
+test_harness.py
+
+# Build & editor metadata
+.vscode/**
+.gitignore
+**/*.map
+
+# Python cache
+__pycache__/**
+*.py[cod]
