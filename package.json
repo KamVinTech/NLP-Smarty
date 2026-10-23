@@ -1,0 +1,102 @@
+{
+  "name": "nlp-smarty-vscode",
+  "displayName": "NLP-Smarty Deterministic Prompt Optimizer",
+  "description": "Zero-LLM prompt compression, MMR context pruning, tool schema compression, and anti-hallucination compiler.",
+  "version": "0.3.0",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onCommand:nlpSmarty.optimizeSelection",
+    "onCommand:nlpSmarty.inlineCompress",
+    "onChatParticipant:nlp-smarty.participant"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "nlpSmarty.optimizeSelection",
+        "title": "NLP-Smarty: Optimize Prompt & Active File Context (Inspect & Copy)"
+      },
+      {
+        "command": "nlpSmarty.inlineCompress",
+        "title": "NLP-Smarty: Compress Selected Prompt Inline"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "nlpSmarty.optimizeSelection",
+        "key": "ctrl+alt+o",
+        "mac": "cmd+alt+o",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "nlpSmarty.inlineCompress",
+        "key": "ctrl+alt+i",
+        "mac": "cmd+alt+i",
+        "when": "editorHasSelection"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "nlpSmarty.optimizeSelection",
+          "group": "navigation@1"
+        },
+        {
+          "command": "nlpSmarty.inlineCompress",
+          "when": "editorHasSelection",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "chatParticipants": [
+      {
+        "id": "nlp-smarty.participant",
+        "name": "smarty",
+        "fullName": "NLP-Smarty Optimizer",
+        "description": "Test deterministic prompt compression, MMR file chunking, and history pruning on real workspace data.",
+        "isSticky": true
+      }
+    ],
+    "configuration": {
+      "title": "NLP-Smarty Optimizer",
+      "properties": {
+        "nlpSmarty.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Path to the Python interpreter inside your NLP-start virtual environment."
+        },
+        "nlpSmarty.engineDirectory": {
+          "type": "string",
+          "default": "",
+          "description": "Path to directory containing bridge_server.py and pipeline.py (defaults to extension root)."
+        },
+        "nlpSmarty.compressionIntensity": {
+          "type": "string",
+          "enum": ["AUTO", "LIGHT", "MEDIUM", "AGGRESSIVE"],
+          "default": "AUTO",
+          "description": "Compression intensity mode."
+        },
+        "nlpSmarty.maxTokenBudget": {
+          "type": "number",
+          "default": 512,
+          "description": "Maximum total token budget for the compiled prompt payload."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.0"
+  }
+}
