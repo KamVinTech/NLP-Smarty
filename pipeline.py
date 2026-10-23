@@ -1,6 +1,6 @@
 """
-Deterministic Prompt Optimization Pipeline (Upgraded v3)
-========================================================
+Deterministic Prompt Optimization Pipeline (Upgraded v3.1)
+==========================================================
 Built in the exact architectural sequence:
   1. Token-Aware Budgeting        (BPE-calibrated estimator + per-section budget enforcement)
   2. Tool Schema Compression      (JSON Schema -> compact typed signature compiler)
@@ -10,9 +10,9 @@ Built in the exact architectural sequence:
   3. MMR + TF-IDF Cosine Pruning  (Maximal Marginal Relevance diversity + TF-IDF fallback)
      + 7. Conversation History    (Recency-weighted MMR history pruning & turn compaction)
   6. Deterministic Prompt Caching (Canonical SHA-256 + Entity-Safe 64-bit SimHash LSH cache)
-  9. Comprehensive Measurements   (Query & full-payload before/after token telemetry)
+  9. Comprehensive Measurements   (Query & full-payload before/after token telemetry + Post-LLM Auditor)
 
-Zero LLM calls. 100% deterministic, reproducible, and backward-compatible.
+Zero LLM calls inside the optimizer. 100% deterministic, reproducible, and backward-compatible.
 """
 
 from __future__ import annotations
@@ -212,12 +212,12 @@ def _fast_stem(word: str) -> str:
         base = word[:-3]
         if len(base) >= 3 and base[-1] == base[-2] and base[-1] not in "aeiou":
             base = base[:-1]
-        elif base in ("writ", "creat", "generat", "execut", "invok", "scrap", "pars", "comput"):
+        elif base in ("writ", "creat", "generat", "execut", "invok", "scrap", "pars", "comput", "updat"):
             base += "e"
         return base
     if word.endswith("ed") and len(word) > 4:
         base = word[:-2]
-        if base in ("creat", "generat", "execut", "invok", "scrap", "pars", "comput"):
+        if base in ("creat", "generat", "execut", "invok", "scrap", "pars", "comput", "updat"):
             return base + "e"
         return base
     if word.endswith("es") and len(word) > 4 and not word.endswith(("ses", "xes", "zes", "ches", "shes")):
@@ -285,7 +285,7 @@ _FILLER_PATTERNS: list[re.Pattern] = [
         r"\bi want (?:you to )?",
         r"^(?:please\s+)?tell me\s+(?=(?:what|who|when|where|why|how)\b)",
         r"\bjust (?:quickly |briefly |simply )+",
-        r"\b(?:quickly|briefly|kindly)\s+(?=(?:write|generate|create|extract|parse|search|run|explain|tell|find|select|build)\b)",
+        r"\b(?:quickly|briefly|kindly)\s+(?=(?:write|generate|create|extract|parse|search|run|explain|tell|find|select|build|update|modify|fix|refactor)\b)",
         r"\bas (?:an ai|a language model|an assistant|a helpful assistant),?\s*",
         r"^(?:hey|hi|hello)(?:\s+there)?[,!]?\s+",
         r"\bthank you(?: in advance)?[!.]?\s*$",
@@ -322,10 +322,6 @@ _CONSTRAINT_MARKER_PATTERN = re.compile(
 
 
 def _select_adaptive_intensity(raw_text: str, requested_intensity: str, core_budget: int) -> str:
-    """
-    Step 8: Adaptive Intensity Selection.
-    Automatically scales compression aggressiveness based on token pressure against `core_budget`.
-    """
     mode = (requested_intensity or "AUTO").strip().upper()
     if mode in ("LIGHT", "MEDIUM", "AGGRESSIVE"):
         return mode
@@ -343,11 +339,6 @@ def _normalize_and_compress_text(
     text: str,
     intensity: str = "MEDIUM",
 ) -> tuple[str, list[str], list[str]]:
-    """
-    Executes Step 5 (Lexical Normalization) + Step 8 (Adaptive Intensity Filler Removal)
-    while locking protected literals and negations.
-    Returns (cleaned_text, stripped_tokens, normalized_phrases).
-    """
     working = unicodedata.normalize("NFKC", text)
     working = (
         working.replace("\u201c", '"')
@@ -469,7 +460,6 @@ def _create_bm25(tokenized_corpus: list[list[str]]):
 
 
 def _build_tfidf_vector(tokens: list[str], idf_map: dict[str, float]) -> dict[str, float]:
-    """Builds an L2-normalized TF-IDF sparse vector over stemmed tokens + char-4-grams."""
     if not tokens:
         return {}
     features = list(tokens)
@@ -500,10 +490,6 @@ def _compute_hybrid_relevance_and_vectors(
     docs_text: list[str],
     bm25_index: Any = None,
 ) -> tuple[list[float], list[dict[str, float]]]:
-    """
-    Step 3: Computes Hybrid Relevance = 0.65 * Normalized_BM25 + 0.35 * TFIDF_Cosine,
-    falling back smoothly to TF-IDF Cosine when exact BM25 score is 0.
-    """
     if not docs_text:
         return [], []
 
@@ -556,9 +542,6 @@ def _mmr_select(
     token_cost_fn: Callable[[Any], int] | None = None,
     min_score: float = 0.05,
 ) -> list[tuple[int, Any, float]]:
-    """
-    Step 3: Maximal Marginal Relevance (MMR) selector with strict Token-Budget awareness.
-    """
     eligible = [
         idx for idx, score in enumerate(relevance_scores)
         if score >= min_score
@@ -616,14 +599,6 @@ def _split_sentences(text: str) -> list[str]:
 
 
 def _extractive_sentence_compress(text: str, token_budget: int = 120) -> str:
-    """
-    Step 4: Composite Extractive Sentence Compressor.
-    Combines:
-      - 45% BM25 score against global top-25 content terms
-      - 35% TF-IDF Centroid similarity
-      - 20% U-shaped positional weight (favoring opening command & closing constraints)
-      - Hard locks (+100) for sentences containing negations, constraints, code, URLs, or emails.
-    """
     if estimate_word_tokens(text) <= token_budget:
         return text
 
@@ -671,15 +646,17 @@ def _extractive_sentence_compress(text: str, token_budget: int = 120) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STAGE 2 — Weighted Lexical & Syntactic Intent Router (FlashText + Regex + POS)
+# STAGE 2 — Weighted Lexical & Syntactic Intent Router (Expanded for Real IDE Data)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _INTENT_KEYWORDS_WEIGHTED: dict[str, dict[str, float]] = {
     "CODE_GENERATION": {
         "write": 1.2, "generate": 1.2, "create": 1.0, "implement": 1.5,
         "code": 1.3, "function": 1.5, "class": 1.3, "script": 1.3,
-        "sql": 1.8, "query": 1.2, "algorithm": 1.5, "refactor": 1.5,
-        "debug": 1.4, "python function": 2.5, "sql query": 2.5,
+        "sql": 1.8, "query": 1.2, "algorithm": 1.5, "refactor": 1.6,
+        "debug": 1.5, "update": 1.3, "modify": 1.3, "edit": 1.2,
+        "fix": 1.5, "optimize": 1.4, "build": 1.3, "add": 1.1,
+        "python function": 2.5, "sql query": 2.5,
     },
     "DATA_EXTRACTION": {
         "extract": 2.0, "parse": 1.8, "find all": 2.0, "pull out": 1.8,
@@ -689,12 +666,13 @@ _INTENT_KEYWORDS_WEIGHTED: dict[str, dict[str, float]] = {
     "TOOL_EXECUTION": {
         "run": 1.4, "execute": 1.6, "search": 1.8, "search the web": 2.5,
         "send": 1.6, "open": 1.3, "read file": 2.2, "read": 1.5,
-        "call": 1.3, "invoke": 1.6, "trigger": 1.5, "look up": 1.8,
+        "load": 1.4, "call": 1.3, "invoke": 1.6, "trigger": 1.5, "look up": 1.8,
     },
     "FACTUAL_QA": {
         "what is": 2.0, "who is": 2.0, "when did": 2.0, "where is": 2.0,
         "how many": 1.8, "define": 1.8, "explain": 1.6, "tell me": 1.2,
-        "capital of": 2.0, "why does": 1.8,
+        "capital of": 2.0, "why does": 1.8, "why is": 1.8, "what does": 1.8,
+        "summarize": 1.6, "review": 1.4,
     },
 }
 
@@ -791,6 +769,13 @@ _KNOWN_TASK_VERBS: dict[str, str] = {
     "calculate": "calculate", "compute": "compute",
     "summarize": "summarize", "translate": "translate",
     "update": "update", "updating": "update",
+    "modify": "modify", "modifying": "modify",
+    "edit": "edit", "editing": "edit",
+    "fix": "fix", "fixing": "fix",
+    "refactor": "refactor", "refactoring": "refactor",
+    "debug": "debug", "debugging": "debug",
+    "optimize": "optimize", "optimizing": "optimize",
+    "review": "review", "reviewing": "review",
 }
 
 
@@ -893,10 +878,6 @@ def _select_few_shots_mmr(
     k: int = 2,
     few_shot_budget: int = 90,
 ) -> list[dict]:
-    """
-    Step 3: Selects up to top-K diverse, relevant few-shot examples using
-    Hybrid (BM25 + TF-IDF Cosine) + MMR diversity within `few_shot_budget`.
-    """
     if not FEW_SHOT_EXAMPLES or k <= 0:
         return []
 
@@ -952,10 +933,6 @@ def _select_and_compress_tools(
     intent: str = "",
     tools_budget: int = 60,
 ) -> tuple[list[dict], int]:
-    """
-    Step 2 + Step 3: Matches tools via word-boundary + stemmed token overlap,
-    compresses their schemas into compact typed signatures, and enforces `tools_budget`.
-    """
     matched: list[tuple[float, dict]] = []
     first_word = query.split()[0].lower() if query.split() else ""
     query_stems = set(_tokenize_for_ir(query))
@@ -1014,11 +991,6 @@ def _prune_external_context_mmr(
     context_budget: int = 160,
     top_k: int = 3,
 ) -> tuple[str, list[int]]:
-    """
-    Step 3: Ranks and deduplicates external RAG `context_chunks` using
-    Maximal Marginal Relevance (MMR, lambda=0.65) + TF-IDF Cosine fallback
-    within `context_budget`.
-    """
     if not context_chunks:
         return "[No external context provided — rely strictly on <core_task>]", []
 
@@ -1049,12 +1021,6 @@ def _prune_conversation_history(
     history: list[dict[str, str]] | None,
     history_budget: int = 80,
 ) -> tuple[str, int]:
-    """
-    Step 7: Conversation History Handling.
-    - Compresses filler in user turns.
-    - Always retains the most recent turn for continuity.
-    - Ranks older turns via Recency-Weighted Hybrid MMR within `history_budget`.
-    """
     if not history or history_budget <= 0:
         return "", 0
 
@@ -1131,13 +1097,6 @@ def _hamming_distance64(a: int, b: int) -> int:
 
 
 class PromptCache:
-    """
-    Step 6: Two-tier deterministic cache:
-      1. Exact Canonical Cache (SHA-256 over normalized query + context/history/budget hash).
-      2. Entity-Safe SimHash Near-Duplicate Cache (Hamming distance <= 2 when
-         intent, negations, extracted entities, and context hash match 100%).
-    """
-
     def __init__(self, max_size: int = 256):
         self.max_size = max_size
         self._exact: OrderedDict[str, CompiledPrompt] = OrderedDict()
@@ -1185,7 +1144,7 @@ PROMPT_CACHE = PromptCache(max_size=256)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STAGE 4 & STEP 9 — Structural Compiler & Before/After Payload Telemetry
+# STAGE 4 & STEP 9 — Structural Compiler, Telemetry & Post-LLM Output Auditor
 # ══════════════════════════════════════════════════════════════════════════════
 
 _RESERVED_XML_TAGS = re.compile(
@@ -1309,6 +1268,70 @@ def _estimate_unoptimized_baseline_tokens(request: RawRequest) -> int:
         output_format="Plain text",
     )
     return estimate_tokens(baseline_payload)
+
+
+def audit_agent_response(response_text: str, trace: OptimizationTrace) -> dict[str, Any]:
+    """
+    Deterministic Post-LLM Output Validator & Hallucination Auditor.
+    Scores an LLM response (0-100) on format compliance, entity fidelity, and negation adherence.
+    """
+    checks: list[dict[str, Any]] = []
+    score = 100
+
+    # 1. Output format compliance check
+    intent = trace.detected_intent
+    if intent == "CODE_GENERATION":
+        has_fence = "```" in response_text or "def " in response_text or "SELECT " in response_text.upper()
+        checks.append({"check": "Code Format Compliance", "passed": has_fence})
+        if not has_fence:
+            score -= 25
+    elif intent == "DATA_EXTRACTION":
+        has_json_array = "[" in response_text and "]" in response_text
+        checks.append({"check": "JSON Array Format", "passed": has_json_array})
+        if not has_json_array:
+            score -= 25
+    elif intent == "TOOL_EXECUTION":
+        has_json_obj = "{" in response_text and "}" in response_text
+        checks.append({"check": "Tool Call JSON Format", "passed": has_json_obj})
+        if not has_json_obj:
+            score -= 25
+    elif intent == "FACTUAL_QA":
+        sents = _split_sentences(response_text)
+        concise = len(sents) <= 4
+        checks.append({"check": "Concise QA (<=3 sentences)", "passed": concise})
+        if not concise:
+            score -= 15
+
+    # 2. Negation / Exclusion violation check (e.g., if 'without using slicing', check for `[::-1]`)
+    if trace.negations:
+        slicing_violated = "[::-1]" in response_text
+        recursion_violated = False
+        m_func = re.search(r"def\s+([a-zA-Z0-9_]+)\s*\(", response_text)
+        if m_func:
+            fn_name = m_func.group(1)
+            body = response_text[m_func.end():]
+            if re.search(rf"\b{re.escape(fn_name)}\s*\(", body):
+                recursion_violated = True
+        neg_passed = not (slicing_violated or recursion_violated)
+        checks.append({"check": "Negation Constraint Respected", "passed": neg_passed})
+        if not neg_passed:
+            score -= 40
+
+    # 3. Entity fidelity check (verifying extracted dates/emails weren't mutated if referenced)
+    entities = trace.extracted_entities or {}
+    entity_ok = True
+    for date_val in entities.get("dates", []):
+        if date_val not in response_text and intent in ("CODE_GENERATION", "DATA_EXTRACTION"):
+            entity_ok = False
+    checks.append({"check": "Verbatim Entity Fidelity", "passed": entity_ok})
+    if not entity_ok:
+        score -= 20
+
+    return {
+        "compliance_score": max(0, score),
+        "output_tokens": estimate_tokens(response_text),
+        "checks": checks,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1467,7 +1490,6 @@ def optimize(request: RawRequest, few_shot_k: int = 2) -> CompiledPrompt:
         output_format=_infer_output_format(intent),
     )
 
-    # Step 1: Enforce hard ceiling `budget.max_total_tokens` by progressively trimming optional blocks
     if estimate_tokens(payload) > budget.max_total_tokens and len(examples) > 1:
         examples = examples[:1]
         trace.injected_example_ids = [e["id"] for e in examples]

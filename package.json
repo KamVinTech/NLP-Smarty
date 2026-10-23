@@ -1,8 +1,8 @@
 {
   "name": "nlp-smarty-vscode",
   "displayName": "NLP-Smarty Deterministic Prompt Optimizer",
-  "description": "Zero-LLM prompt compression, MMR context pruning, tool schema compression, and anti-hallucination compiler.",
-  "version": "0.3.0",
+  "description": "Zero-LLM prompt compression, MMR context pruning, tool schema compression, and side-by-side Raw vs. Optimized LLM evaluation.",
+  "version": "0.4.0",
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -12,6 +12,7 @@
   ],
   "activationEvents": [
     "onCommand:nlpSmarty.optimizeSelection",
+    "onCommand:nlpSmarty.compareSideBySide",
     "onCommand:nlpSmarty.inlineCompress",
     "onChatParticipant:nlp-smarty.participant"
   ],
@@ -21,6 +22,10 @@
       {
         "command": "nlpSmarty.optimizeSelection",
         "title": "NLP-Smarty: Optimize Prompt & Active File Context (Inspect & Copy)"
+      },
+      {
+        "command": "nlpSmarty.compareSideBySide",
+        "title": "NLP-Smarty: Compare Raw vs. Optimized LLM Output (Side-by-Side)"
       },
       {
         "command": "nlpSmarty.inlineCompress",
@@ -35,6 +40,12 @@
         "when": "editorTextFocus"
       },
       {
+        "command": "nlpSmarty.compareSideBySide",
+        "key": "ctrl+alt+c",
+        "mac": "cmd+alt+c",
+        "when": "editorTextFocus"
+      },
+      {
         "command": "nlpSmarty.inlineCompress",
         "key": "ctrl+alt+i",
         "mac": "cmd+alt+i",
@@ -44,13 +55,17 @@
     "menus": {
       "editor/context": [
         {
-          "command": "nlpSmarty.optimizeSelection",
+          "command": "nlpSmarty.compareSideBySide",
           "group": "navigation@1"
+        },
+        {
+          "command": "nlpSmarty.optimizeSelection",
+          "group": "navigation@2"
         },
         {
           "command": "nlpSmarty.inlineCompress",
           "when": "editorHasSelection",
-          "group": "navigation@2"
+          "group": "navigation@3"
         }
       ]
     },
@@ -59,8 +74,18 @@
         "id": "nlp-smarty.participant",
         "name": "smarty",
         "fullName": "NLP-Smarty Optimizer",
-        "description": "Test deterministic prompt compression, MMR file chunking, and history pruning on real workspace data.",
-        "isSticky": true
+        "description": "Compare Raw vs. Deterministically Optimized prompts on real workspace files via Copilot (vscode.lm) or HuggingFace (app.py).",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "compare",
+            "description": "Run Raw vs. Optimized prompt side-by-side on the downstream LLM and audit compliance"
+          },
+          {
+            "name": "optimize",
+            "description": "Inspect deterministic optimization telemetry and compiled XML payload without calling an LLM"
+          }
+        ]
       }
     ],
     "configuration": {
@@ -74,7 +99,23 @@
         "nlpSmarty.engineDirectory": {
           "type": "string",
           "default": "",
-          "description": "Path to directory containing bridge_server.py and pipeline.py (defaults to extension root)."
+          "description": "Path to directory containing bridge_server.py, app.py, and pipeline.py (defaults to extension root)."
+        },
+        "nlpSmarty.downstreamBackend": {
+          "type": "string",
+          "enum": ["auto", "vscode-lm", "huggingface"],
+          "default": "auto",
+          "description": "Downstream LLM backend for side-by-side comparison ('auto' uses vscode.lm Copilot if available, else HuggingFace app.py)."
+        },
+        "nlpSmarty.huggingFaceToken": {
+          "type": "string",
+          "default": "",
+          "description": "Optional HuggingFace API token (HF_TOKEN) when using the HuggingFace app.py backend."
+        },
+        "nlpSmarty.huggingFaceModel": {
+          "type": "string",
+          "default": "Qwen/Qwen2.5-Coder-32B-Instruct",
+          "description": "HuggingFace model ID for app.py downstream evaluation."
         },
         "nlpSmarty.compressionIntensity": {
           "type": "string",
