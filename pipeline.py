@@ -1,12 +1,12 @@
 """
-Deterministic Prompt Optimization Pipeline (Upgraded v3.2)
+Deterministic Prompt Optimization Pipeline (Upgraded v3.3)
 ==========================================================
 Built in the exact architectural sequence:
-  1. Token-Aware Budgeting        (BPE-calibrated estimator + per-section budget enforcement)
+  1. Token-Aware Budgeting        (BPE-calibrated estimator + per-section & structure-aware budget scaling)
   2. Tool Schema Compression      (JSON Schema -> compact typed signature compiler)
-  4. Extractive Compression       (Composite BM25 + TF-IDF Centroid + U-Positional Salience)
-     + 5. Lexical Normalization   (NFKC, contraction expansion, verbose-idiom replacement, stemming)
-     + 8. Adaptive Intensity      (AUTO | LIGHT | MEDIUM | AGGRESSIVE compression scaling)
+  4. Extractive Compression       (Markdown/Code-Block/List-Aware Block Salience + Composite BM25/TF-IDF/Positional)
+     + 5. Lexical Normalization   (Structure-safe NFKC, contraction expansion, verbose-idiom replacement, stemming)
+     + 8. Adaptive Intensity      (AUTO | LIGHT | MEDIUM | AGGRESSIVE compression scaling with code/list protection)
   3. MMR + TF-IDF Cosine Pruning  (Maximal Marginal Relevance diversity + TF-IDF fallback)
      + 7. Conversation History    (Recency-weighted MMR history pruning & turn compaction)
   6. Deterministic Prompt Caching (Canonical SHA-256 + Entity-Safe 64-bit SimHash LSH cache)
@@ -104,11 +104,29 @@ def estimate_word_tokens(text: str) -> int:
     return len(text.split()) if text else 0
 
 
+def _is_structured_markdown_doc(text: str) -> bool:
+    """Detects multi-section Markdown system prompts, specs, or documentation."""
+    if "```" in text:
+        return True
+    heading_count = len(re.findall(r"(?m)^#{1,6}\s+\S+", text))
+    bullet_count = len(re.findall(r"(?m)^\s*(?:[-*+]|\d+\.)\s+\S+", text))
+    return heading_count >= 2 or (heading_count >= 1 and bullet_count >= 4) or bullet_count >= 8
+
+
 def _resolve_budget(request: RawRequest) -> TokenBudget:
     b = getattr(request, "token_budget", None)
-    if isinstance(b, TokenBudget):
-        return b
-    return TokenBudget()
+    base = copy.deepcopy(b) if isinstance(b, TokenBudget) else TokenBudget()
+
+    # If the user feeds a large structured Markdown system prompt (e.g., prompt.txt with 450+ words)
+    # and left core_query_budget at the default 120, scale the budget proportionally (~55% of raw words)
+    # so we compress redundant sections/examples cleanly without amputating 75% of the document.
+    raw_words = estimate_word_tokens(request.text)
+    if _is_structured_markdown_doc(request.text) and base.core_query_budget == 120 and raw_words > 180:
+        scaled_core = min(max(220, int(raw_words * 0.55)), 480)
+        base.core_query_budget = scaled_core
+        base.max_total_tokens = max(base.max_total_tokens, scaled_core + 350)
+
+    return base
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -180,7 +198,7 @@ def _compress_tool_schema(raw_schema: str | dict) -> tuple[str, int]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 4 (+ 5 & 8) — Lexical Normalization, Adaptive Intensity & Extractive Compression
+# STEP 4 (+ 5 & 8) — Lexical Normalization, Adaptive Intensity & Structure-Preserving Compression
 # ══════════════════════════════════════════════════════════════════════════════
 
 _STOPWORDS: frozenset[str] = frozenset({
@@ -271,6 +289,8 @@ _LEXICAL_PHRASE_MAP: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"\bmake use of\b", re.IGNORECASE), "use", "make use of -> use"),
     (re.compile(r"\bas a means to\b", re.IGNORECASE), "to", "as a means to -> to"),
     (re.compile(r"\bin the near future\b", re.IGNORECASE), "soon", "in the near future -> soon"),
+    (re.compile(r"\byou are an expert ai assistant specialized in\b", re.IGNORECASE), "Expert in", "You are an expert AI assistant specialized in -> Expert in"),
+    (re.compile(r"\byou are an expert ai assistant\b", re.IGNORECASE), "Expert assistant", "You are an expert AI assistant -> Expert assistant"),
 ]
 
 _FILLER_PATTERNS: list[re.Pattern] = [
@@ -294,14 +314,16 @@ _FILLER_PATTERNS: list[re.Pattern] = [
 ]
 
 _HEDGING_ADVERBS_RE = re.compile(
-    r"\b(?:basically|actually|honestly|literally|essentially|virtually|definitely)\b\s*",
+    r"\b(?:basically|actually|honestly|literally|essentially|virtually|definitely)\b[ \t]*",
     re.IGNORECASE,
 )
-_AGGRESSIVE_ARTICLES_RE = re.compile(r"\b(?:a|an|the)\b\s+", re.IGNORECASE)
+# Only strip inline horizontal spaces after articles, never newlines
+_AGGRESSIVE_ARTICLES_RE = re.compile(r"\b(?:a|an|the)\b[ \t]+", re.IGNORECASE)
 
+# Protects triple-backtick fenced code blocks FIRST, then inline code, strings, URLs, emails, and negations
 _PROTECTED_PATTERN = re.compile(
-    r'(`[^`]+`|"(?:\\.|[^"\\])*"|(?<!\w)\'(?:\\.|[^\'\\])*\'(?!\w)|https?://\S+|[\w.\-]+@[\w.\-]+\.\w+|\b(?:not|never|without|except|neither|nor|unless)\b)',
-    re.IGNORECASE | re.DOTALL,
+    r'(```[\s\S]*?```|`[^`\n]+`|"(?:\\.|[^"\\\n])*"|(?<!\w)\'(?:\\.|[^\'\\\n])*\'(?!\w)|https?://\S+|[\w.\-]+@[\w.\-]+\.\w+|\b(?:not|never|without|except|neither|nor|unless)\b)',
+    re.IGNORECASE,
 )
 
 _NEGATION_PATTERN = re.compile(
@@ -387,11 +409,28 @@ def _normalize_and_compress_text(
     if intensity == "AGGRESSIVE" and len(protected.split()) > 25:
         protected = _AGGRESSIVE_ARTICLES_RE.sub("", protected)
 
+    # Restore protected spans (fenced code blocks, inline code, quoted literals, negations)
     for key, val in reversed(list(placeholders.items())):
         protected = protected.replace(key, val)
 
-    cleaned = re.sub(r"\s{2,}", " ", protected).strip()
-    cleaned = re.sub(r"^[,;:\-]+\s*", "", cleaned).strip()
+    # Preserve Markdown line breaks and fenced code block formatting while collapsing horizontal spaces
+    is_multiline_md = "\n" in protected and _is_structured_markdown_doc(protected)
+    if is_multiline_md:
+        # Collapse horizontal spaces outside of fenced code blocks
+        parts = re.split(r"(```[\s\S]*?```)", protected)
+        cleaned_parts: list[str] = []
+        for idx, part in enumerate(parts):
+            if idx % 2 == 1:
+                cleaned_parts.append(part)
+            else:
+                lines = [re.sub(r"[ \t]{2,}", " ", ln).rstrip() for ln in part.splitlines()]
+                block_str = "\n".join(lines)
+                block_str = re.sub(r"\n{3,}", "\n\n", block_str)
+                cleaned_parts.append(block_str)
+        cleaned = "".join(cleaned_parts).strip()
+    else:
+        cleaned = re.sub(r"\s{2,}", " ", protected).strip()
+        cleaned = re.sub(r"^[,;:\-]+\s*", "", cleaned).strip()
 
     if cleaned and cleaned[0].islower():
         cleaned = cleaned[0].upper() + cleaned[1:]
@@ -587,7 +626,7 @@ def _mmr_select(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 4 (Continued) — Composite Extractive Sentence Compressor
+# STEP 4 (Continued) — Structure-Aware Block & Sentence Extractive Compressor
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _split_sentences(text: str) -> list[str]:
@@ -598,9 +637,117 @@ def _split_sentences(text: str) -> list[str]:
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
 
 
+def _split_markdown_blocks(text: str) -> list[str]:
+    """
+    Splits a structured Markdown document into coherent, atomic blocks:
+      - Fenced code blocks (` ``` ... ``` `) stay 100% intact (never sliced mid-code!)
+      - A Markdown heading (`## ...`) stays attached to its immediately following list or paragraph
+      - Numbered/bulleted lists stay grouped together instead of splitting on `1.`
+    """
+    segments = re.split(r"(```[\s\S]*?```)", text)
+    raw_blocks: list[str] = []
+
+    for idx, seg in enumerate(segments):
+        if not seg.strip():
+            continue
+        if idx % 2 == 1:
+            # Fenced code block: keep atomic, or attach to preceding heading if it ended with a heading
+            if raw_blocks and re.match(r"^#{1,6}\s+[^\n]+$", raw_blocks[-1].strip()):
+                raw_blocks[-1] = raw_blocks[-1].rstrip() + "\n" + seg.strip()
+            else:
+                raw_blocks.append(seg.strip())
+        else:
+            # Split prose/lists on double-newlines or before Markdown headings
+            sub_chunks = re.split(r"\n{2,}|(?=\n#{1,6}\s+)", seg)
+            for sc in sub_chunks:
+                sc_clean = sc.strip()
+                if not sc_clean:
+                    continue
+                if raw_blocks and re.match(r"^#{1,6}\s+[^\n]+$", raw_blocks[-1].strip()):
+                    raw_blocks[-1] = raw_blocks[-1].rstrip() + "\n" + sc_clean
+                else:
+                    raw_blocks.append(sc_clean)
+
+    return raw_blocks
+
+
+def _compact_markdown_block(block: str) -> str:
+    """
+    Applies lossless structural compaction inside a Markdown block:
+      - Strips inline comments inside ASCII directory trees (`├── AIClient.ts # comment` -> `├── AIClient.ts`)
+      - Removes blank lines inside lists
+    """
+    if "├──" in block or "└──" in block:
+        lines = []
+        for ln in block.splitlines():
+            if ("├──" in ln or "└──" in ln) and "#" in ln:
+                ln = re.sub(r"\s+#\s+.*$", "", ln)
+            lines.append(ln.rstrip())
+        return "\n".join(lines)
+    return block
+
+
+def _extractive_markdown_compress(text: str, token_budget: int) -> str:
+    """
+    Structure-preserving extractive compressor for multi-section Markdown prompts.
+    Never splits fenced code blocks (` ```...``` `) or numbered list items (`1.`).
+    """
+    blocks = [_compact_markdown_block(b) for b in _split_markdown_blocks(text)]
+    if len(blocks) <= 1:
+        return text
+
+    compacted_full = "\n\n".join(blocks)
+    if estimate_word_tokens(compacted_full) <= token_budget:
+        return compacted_full
+
+    all_tokens = _tokenize_for_ir(compacted_full)
+    centroid_query = " ".join(tok for tok, _ in Counter(all_tokens).most_common(30))
+    hybrid_rel, doc_vecs = _compute_hybrid_relevance_and_vectors(centroid_query, blocks)
+
+    n_blocks = len(blocks)
+    scored: list[tuple[float, int, str]] = []
+    for idx, (rel, blk) in enumerate(zip(hybrid_rel, blocks)):
+        rel_pos = idx / max(1, n_blocks - 1)
+        u_pos_weight = 4.0 * ((rel_pos - 0.5) ** 2)
+
+        salience = 0.75 * rel + 0.25 * u_pos_weight
+        if idx == 0:
+            salience += 100.0  # Always preserve the opening role/persona definition
+        if idx == n_blocks - 1 and re.search(r"(?i)\b(when helping|instructions|rules|guidelines|constraints)\b", blk):
+            salience += 90.0   # Always preserve closing behavioral instructions
+        if _NEGATION_PATTERN.search(blk):
+            salience += 45.0
+        if _CONSTRAINT_MARKER_PATTERN.search(blk):
+            salience += 30.0
+        if re.search(r"(?i)^#{1,3}\s+(overview|core features|architecture|configuration|commands|best practices)", blk):
+            salience += 25.0
+
+        scored.append((salience, idx, blk))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    kept: list[tuple[int, str]] = []
+    used_words = 0
+
+    for sal, idx, blk in scored:
+        w_count = estimate_word_tokens(blk)
+        if used_words + w_count > token_budget and kept:
+            continue
+        kept.append((idx, blk))
+        used_words += w_count
+        if used_words >= token_budget:
+            break
+
+    kept.sort(key=lambda x: x[0])
+    return "\n\n".join(b for _, b in kept)
+
+
 def _extractive_sentence_compress(text: str, token_budget: int = 120) -> str:
     if estimate_word_tokens(text) <= token_budget:
         return text
+
+    # Route multi-section Markdown / code-block documents through structure-aware block compression
+    if _is_structured_markdown_doc(text):
+        return _extractive_markdown_compress(text, token_budget=token_budget)
 
     sentences = _split_sentences(text)
     if len(sentences) <= 1:
@@ -656,7 +803,8 @@ _INTENT_KEYWORDS_WEIGHTED: dict[str, dict[str, float]] = {
         "sql": 1.8, "query": 1.2, "algorithm": 1.5, "refactor": 1.6,
         "debug": 1.5, "update": 1.3, "modify": 1.3, "edit": 1.2,
         "fix": 1.5, "optimize": 1.4, "build": 1.3, "add": 1.1,
-        "python function": 2.5, "sql query": 2.5,
+        "python function": 2.5, "sql query": 2.5, "typescript": 1.5,
+        "playwright": 1.5, "framework": 1.2,
     },
     "DATA_EXTRACTION": {
         "extract": 2.0, "parse": 1.8, "find all": 2.0, "pull out": 1.8,
@@ -826,10 +974,12 @@ def _extract_entities(raw_text: str, cleaned_text: str) -> dict[str, Any]:
     text_without_dates = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", "", raw_text)
     numbers = re.findall(r"\b\d+(?:\.\d+)?\b", text_without_dates)
     if numbers:
-        entities["numbers"] = list(dict.fromkeys(numbers))
+        entities["numbers"] = list(dict.fromkeys(numbers[:12]))
 
-    double_quoted = re.findall(r'"([^"]+)"', raw_text)
-    single_quoted = re.findall(r"(?<!\w)'([^']+)'(?!\w)", raw_text)
+    # Strip fenced code blocks before scanning for quoted string literals
+    prose_only = re.sub(r"```[\s\S]*?```", "", raw_text)
+    double_quoted = re.findall(r'"([^"\n]+)"', prose_only)
+    single_quoted = re.findall(r"(?<!\w)'([^'\n]+)'(?!\w)", prose_only)
     flat_quoted = [q for q in (double_quoted + single_quoted) if q.strip()]
     if flat_quoted:
         entities["quoted_strings"] = list(dict.fromkeys(flat_quoted))

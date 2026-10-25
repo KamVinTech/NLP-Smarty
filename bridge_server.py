@@ -41,10 +41,15 @@ def _emit_stderr_audit_log(req_id: str, cmd: str, raw_prompt: str, trace_dict: d
     to `.nlp_smarty_optimization.log` in the engine working directory.
     """
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    raw_preview = raw_prompt if len(raw_prompt) <= 180 else raw_prompt[:180] + "... [truncated in log preview]"
+    comp_preview = trace_dict.get("compressed_query_text", "")
+    if len(comp_preview) > 180:
+        comp_preview = comp_preview[:180] + "... [truncated in log preview]"
+
     lines = [
         f"\n================ [NLP-Smarty Audit Log | {ts} | req={req_id} | cmd={cmd}] ================",
-        f"  RAW PROMPT      : {raw_prompt!r}",
-        f"  COMPRESSED CORE : {trace_dict.get('compressed_query_text', '')!r}",
+        f"  RAW PROMPT      : {raw_preview!r}",
+        f"  COMPRESSED CORE : {comp_preview!r}",
         f"  INTENT & MODE   : {trace_dict.get('detected_intent')} (conf={trace_dict.get('intent_confidence')}, intensity={trace_dict.get('compression_intensity_used')})",
         f"  QUERY STATS     : {trace_dict.get('raw_token_count')} -> {trace_dict.get('optimized_token_count')} words (-{trace_dict.get('query_token_savings_pct')}%) | BPE: {trace_dict.get('raw_bpe_tokens')} -> {trace_dict.get('optimized_bpe_tokens')} toks (-{trace_dict.get('query_bpe_savings_pct')}%)",
         f"  CONTEXT MMR     : kept chunks {trace_dict.get('kept_context_indices')}/{trace_dict.get('total_context_chunks')} ({trace_dict.get('raw_context_tokens')} -> {trace_dict.get('pruned_context_tokens')} toks, -{trace_dict.get('context_token_savings_pct')}%)",

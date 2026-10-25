@@ -319,6 +319,8 @@ function buildLiveComparisonHtml(rawPrompt, compiledPayload, t, sourceLabel) {
     line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-word;
+    max-height: 360px;
+    overflow-y: auto;
   }
   .diff-del {
     background: var(--del-bg);
@@ -446,7 +448,7 @@ function buildLiveComparisonHtml(rawPrompt, compiledPayload, t, sourceLabel) {
     </div>
     <div>
       <div class="label" style="margin-bottom:6px;">New Optimized Core Task (${t.optimized_token_count} words / ${t.optimized_bpe_tokens} BPE tokens)</div>
-      <div class="prompt-box"><span class="diff-add">${escapeHtml(coreQuery)}</span></div>
+      <div class="prompt-box">${escapeHtml(coreQuery)}</div>
     </div>
   </div>
 
@@ -463,11 +465,11 @@ function buildLiveComparisonHtml(rawPrompt, compiledPayload, t, sourceLabel) {
     </thead>
     <tbody>
       <tr>
-        <td><strong>User Query (Stage 1)</strong></td>
+        <td><strong>User Query / Document (Stage 1)</strong></td>
         <td>${t.raw_bpe_tokens} BPE (${t.raw_token_count}w)</td>
         <td>${t.optimized_bpe_tokens} BPE (${t.optimized_token_count}w)</td>
         <td><div class="bar-wrap"><div class="bar-fill" style="width:${Math.min(100, t.query_bpe_savings_pct)}%"></div></div><strong>-${t.query_bpe_savings_pct}%</strong></td>
-        <td>Stripped ${t.stripped_tokens.length} filler phrase(s), normalized ${t.normalized_phrases.length} idiom(s)</td>
+        <td>Stripped ${t.stripped_tokens.length} filler phrase(s), normalized ${t.normalized_phrases.length} idiom(s), preserved Markdown/code blocks</td>
       </tr>
       <tr>
         <td><strong>Workspace File Context (Stage 3 MMR)</strong></td>
@@ -686,8 +688,8 @@ function activate(context) {
             `// Latency & Cache          : ${t.latency_ms} ms (${t.cache_hit ? t.cache_type : 'LIVE'})\n\n` +
             `// ══════════════ FULL COMPILED XML PAYLOAD ══════════════\n` +
             `${compiledPayload}\n`;
-        const leftUri = diffProvider.setDoc('Old_Raw_Prompt.txt', leftContent);
-        const rightUri = diffProvider.setDoc('New_Optimized_Prompt.txt', rightContent);
+        const leftUri = diffProvider.setDoc('Old_Raw_Prompt.md', leftContent);
+        const rightUri = diffProvider.setDoc('New_Optimized_Prompt.md', rightContent);
         await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, `NLP-Smarty Diff: Old (${t.raw_token_count}w) ↔ New (${t.optimized_token_count}w, -${t.query_token_savings_pct}%)`, { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false });
     };
     const handleInspectorAction = async (action) => {
@@ -892,7 +894,7 @@ function activate(context) {
                 stream.markdown(`### Old vs. New Prompt Optimization Stats\n` +
                     `| Metric | Old (Raw) | New (Optimized) | Savings |\n` +
                     `| :--- | :--- | :--- | :--- |\n` +
-                    `| **Prompt Text** | \`${request.prompt}\` | \`${t.compressed_query_text}\` | **-${t.query_token_savings_pct}% words** |\n` +
+                    `| **Prompt Words** | \`${t.raw_token_count}w\` | \`${t.optimized_token_count}w\` | **-${t.query_token_savings_pct}%** |\n` +
                     `| **Query Subwords (BPE)** | \`${t.raw_bpe_tokens}\` | \`${t.optimized_bpe_tokens}\` | **-${t.query_bpe_savings_pct}%** |\n` +
                     `| **Workspace Context** | \`${t.raw_context_tokens} toks (${t.total_context_chunks} chunks)\` | \`${t.pruned_context_tokens} toks (chunks ${JSON.stringify(t.kept_context_indices)})\` | **-${t.context_token_savings_pct}%** |\n` +
                     `| **Tool Schemas** | \`${t.raw_tools_tokens} toks\` | \`${t.compressed_tools_tokens} toks (${JSON.stringify(t.injected_tool_ids)})\` | **Saved ${t.tool_schema_tokens_saved} toks** |\n` +
@@ -917,8 +919,6 @@ function activate(context) {
             const rawScore = cmp.raw_audit?.compliance_score ?? 0;
             const optScore = cmp.optimized_audit?.compliance_score ?? 100;
             stream.markdown(`### NLP-Smarty A/B Downstream Agent Comparison (\`${cmp.backend}\`)\n\n` +
-                `**Old Prompt:** \`${request.prompt}\`\n\n` +
-                `**New Core Prompt:** \`${t.compressed_query_text}\`\n\n` +
                 `| Metric | Raw Unoptimized Prompt | NLP-Smarty Compiled Prompt | Delta |\n` +
                 `| :--- | :--- | :--- | :--- |\n` +
                 `| **Query Words / BPE** | \`${t.raw_token_count}w (${t.raw_bpe_tokens} BPE)\` | \`${t.optimized_token_count}w (${t.optimized_bpe_tokens} BPE)\` | **-${t.query_token_savings_pct}% words** |\n` +
@@ -955,7 +955,7 @@ function renderSideBySideWebview(rawPrompt, cmp) {
   .label { font-size: 11px; text-transform: uppercase; opacity: 0.8; }
   .diff-del { background: rgba(248, 81, 73, 0.22); color: #ff7b72; text-decoration: line-through; padding: 1px 4px; border-radius: 3px; }
   .diff-add { background: rgba(46, 160, 67, 0.22); color: #3fb950; font-weight: 600; padding: 1px 4px; border-radius: 3px; }
-  pre { background: var(--vscode-textCodeBlock-background); padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; }
+  pre { background: var(--vscode-textCodeBlock-background); padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; max-height: 350px; overflow-y: auto; }
 </style>
 </head>
 <body>
@@ -973,7 +973,7 @@ function renderSideBySideWebview(rawPrompt, cmp) {
     </div>
     <div class="card">
       <h3>New Optimized Core Prompt (${t.optimized_token_count} words)</h3>
-      <pre><span class="diff-add">${escapeHtml(t.compressed_query_text || '')}</span></pre>
+      <pre>${escapeHtml(t.compressed_query_text || '')}</pre>
     </div>
   </div>
   <div class="ab-grid">
