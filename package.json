@@ -1,8 +1,8 @@
 {
   "name": "nlp-smarty-vscode",
   "displayName": "NLP-Smarty Deterministic Prompt Optimizer",
-  "description": "Zero-LLM prompt compression, MMR context pruning, tool schema compression, and side-by-side Raw vs. Optimized LLM evaluation.",
-  "version": "0.4.0",
+  "description": "Zero-LLM prompt compression, MMR context pruning, tool schema compression, live Old vs. New prompt stats, and side-by-side Raw vs. Optimized LLM evaluation.",
+  "version": "0.5.0",
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -11,9 +11,6 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onCommand:nlpSmarty.optimizeSelection",
-    "onCommand:nlpSmarty.compareSideBySide",
-    "onCommand:nlpSmarty.inlineCompress",
     "onChatParticipant:nlp-smarty.participant"
   ],
   "main": "./out/extension.js",
@@ -21,15 +18,28 @@
     "commands": [
       {
         "command": "nlpSmarty.optimizeSelection",
-        "title": "NLP-Smarty: Optimize Prompt & Active File Context (Inspect & Copy)"
+        "title": "NLP-Smarty: Optimize Prompt / File & Show Old vs. New Stats Alongside",
+        "icon": "$(zap)"
+      },
+      {
+        "command": "nlpSmarty.openPromptDiff",
+        "title": "NLP-Smarty: Open Native Side-by-Side Diff (Old vs. New Prompt)",
+        "icon": "$(diff)"
       },
       {
         "command": "nlpSmarty.compareSideBySide",
-        "title": "NLP-Smarty: Compare Raw vs. Optimized LLM Output (Side-by-Side)"
+        "title": "NLP-Smarty: Compare Raw vs. Optimized LLM Output (Side-by-Side)",
+        "icon": "$(split-horizontal)"
       },
       {
         "command": "nlpSmarty.inlineCompress",
-        "title": "NLP-Smarty: Compress Selected Prompt Inline"
+        "title": "NLP-Smarty: Compress Prompt Inline & Show Stats Alongside",
+        "icon": "$(Sparkle)"
+      },
+      {
+        "command": "nlpSmarty.showLogs",
+        "title": "NLP-Smarty: Show Optimization Audit Logs",
+        "icon": "$(output)"
       }
     ],
     "keybindings": [
@@ -37,6 +47,12 @@
         "command": "nlpSmarty.optimizeSelection",
         "key": "ctrl+alt+o",
         "mac": "cmd+alt+o",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "nlpSmarty.openPromptDiff",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d",
         "when": "editorTextFocus"
       },
       {
@@ -49,23 +65,49 @@
         "command": "nlpSmarty.inlineCompress",
         "key": "ctrl+alt+i",
         "mac": "cmd+alt+i",
-        "when": "editorHasSelection"
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "nlpSmarty.showLogs",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l"
       }
     ],
     "menus": {
-      "editor/context": [
+      "editor/title": [
         {
-          "command": "nlpSmarty.compareSideBySide",
+          "command": "nlpSmarty.optimizeSelection",
           "group": "navigation@1"
         },
         {
-          "command": "nlpSmarty.optimizeSelection",
+          "command": "nlpSmarty.openPromptDiff",
           "group": "navigation@2"
         },
         {
-          "command": "nlpSmarty.inlineCompress",
-          "when": "editorHasSelection",
+          "command": "nlpSmarty.showLogs",
           "group": "navigation@3"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "nlpSmarty.optimizeSelection",
+          "group": "navigation@1"
+        },
+        {
+          "command": "nlpSmarty.openPromptDiff",
+          "group": "navigation@2"
+        },
+        {
+          "command": "nlpSmarty.compareSideBySide",
+          "group": "navigation@3"
+        },
+        {
+          "command": "nlpSmarty.inlineCompress",
+          "group": "navigation@4"
+        },
+        {
+          "command": "nlpSmarty.showLogs",
+          "group": "navigation@5"
         }
       ]
     },
@@ -83,7 +125,7 @@
           },
           {
             "name": "optimize",
-            "description": "Inspect deterministic optimization telemetry and compiled XML payload without calling an LLM"
+            "description": "Inspect deterministic optimization telemetry and Old vs. New prompt stats without calling an LLM"
           }
         ]
       }
@@ -94,12 +136,22 @@
         "nlpSmarty.pythonPath": {
           "type": "string",
           "default": "python3",
-          "description": "Path to the Python interpreter inside your NLP-start virtual environment."
+          "description": "Path to the Python interpreter (auto-detects NLP-start/bin/python or .venv/bin/python if left as python3)."
         },
         "nlpSmarty.engineDirectory": {
           "type": "string",
           "default": "",
           "description": "Path to directory containing bridge_server.py, app.py, and pipeline.py (defaults to extension root)."
+        },
+        "nlpSmarty.autoShowLogs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically reveal the NLP-Smarty Optimizer Output panel when an optimization runs."
+        },
+        "nlpSmarty.optimizeOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically update the alongside Old vs. New Prompt Comparison Inspector whenever a file is saved."
         },
         "nlpSmarty.downstreamBackend": {
           "type": "string",

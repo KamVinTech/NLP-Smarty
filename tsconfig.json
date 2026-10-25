@@ -6,6 +6,9 @@
     "lib": ["ES2022", "DOM"],
     "sourceMap": true,
     "rootDir": "src",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
     "strict": true,
     "types": ["node"]
   },

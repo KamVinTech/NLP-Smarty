@@ -29,14 +29,30 @@ class RawRequest:
 
 @dataclass
 class OptimizationTrace:
-    # Step 9: Comprehensive Before & After Token Measurements
+    # Step 9: Comprehensive Before & After Token Measurements (Words + BPE Subword Tokens)
     raw_token_count: int = 0
     optimized_token_count: int = 0
     query_token_savings_pct: float = 0.0
+    raw_bpe_tokens: int = 0
+    optimized_bpe_tokens: int = 0
+    query_bpe_savings_pct: float = 0.0
     unoptimized_payload_token_count: int = 0
     compiled_payload_token_count: int = 0
     payload_token_savings_pct: float = 0.0
     tool_schema_tokens_saved: int = 0
+
+    # Per-Section Token Breakdown & Context Pruning Stats
+    compressed_query_text: str = ""
+    total_context_chunks: int = 0
+    raw_context_tokens: int = 0
+    pruned_context_tokens: int = 0
+    context_token_savings_pct: float = 0.0
+    raw_history_tokens: int = 0
+    pruned_history_tokens: int = 0
+    raw_tools_tokens: int = 0
+    compressed_tools_tokens: int = 0
+    raw_examples_tokens: int = 0
+    selected_examples_tokens: int = 0
 
     # Routing & Extraction Audit
     detected_intent: str = ""
@@ -45,7 +61,7 @@ class OptimizationTrace:
     compression_intensity_used: str = "LIGHT"
     pruning_strategy_used: str = "MMR+BM25+TFIDF"
 
-    # Transformation Details
+    # Transformation Details & Step-by-Step Stage Audit Logs
     stripped_tokens: list[str] = field(default_factory=list)
     normalized_phrases: list[str] = field(default_factory=list)
     injected_example_ids: list[str] = field(default_factory=list)
@@ -54,6 +70,7 @@ class OptimizationTrace:
     kept_history_turns: int = 0
     extracted_entities: dict[str, Any] = field(default_factory=dict)
     negations: list[str] = field(default_factory=list)
+    stage_logs: list[str] = field(default_factory=list)
 
     # Step 6: Caching & Telemetry
     cache_hit: bool = False

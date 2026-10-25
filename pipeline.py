@@ -1,5 +1,5 @@
 """
-Deterministic Prompt Optimization Pipeline (Upgraded v3.1)
+Deterministic Prompt Optimization Pipeline (Upgraded v3.2)
 ==========================================================
 Built in the exact architectural sequence:
   1. Token-Aware Budgeting        (BPE-calibrated estimator + per-section budget enforcement)
@@ -10,7 +10,7 @@ Built in the exact architectural sequence:
   3. MMR + TF-IDF Cosine Pruning  (Maximal Marginal Relevance diversity + TF-IDF fallback)
      + 7. Conversation History    (Recency-weighted MMR history pruning & turn compaction)
   6. Deterministic Prompt Caching (Canonical SHA-256 + Entity-Safe 64-bit SimHash LSH cache)
-  9. Comprehensive Measurements   (Query & full-payload before/after token telemetry + Post-LLM Auditor)
+  9. Comprehensive Measurements   (Query & full-payload before/after token telemetry + Stage Logs + Post-LLM Auditor)
 
 Zero LLM calls inside the optimizer. 100% deterministic, reproducible, and backward-compatible.
 """
@@ -1342,11 +1342,14 @@ def optimize(request: RawRequest, few_shot_k: int = 2) -> CompiledPrompt:
     t0 = time.perf_counter()
     trace = OptimizationTrace()
     budget = _resolve_budget(request)
+    logs: list[str] = []
 
     trace.raw_token_count = estimate_word_tokens(request.text)
+    trace.raw_bpe_tokens = estimate_tokens(request.text)
     trace.unoptimized_payload_token_count = _estimate_unoptimized_baseline_tokens(request)
 
     # ── Step 8 + Step 5 + Step 4: Adaptive Intensity, Lexical Normalization & Extractive Compression ──
+    s1_t0 = time.perf_counter()
     intensity = _select_adaptive_intensity(
         request.text,
         getattr(request, "compression_intensity", "AUTO"),
@@ -1360,17 +1363,34 @@ def optimize(request: RawRequest, few_shot_k: int = 2) -> CompiledPrompt:
     )
     compressed = _extractive_sentence_compress(compressed, token_budget=budget.core_query_budget)
     compressed = _sanitize_xml_payload(compressed)
+    s1_ms = round((time.perf_counter() - s1_t0) * 1000, 3)
 
+    trace.compressed_query_text = compressed
     trace.stripped_tokens = stripped
     trace.normalized_phrases = normalized_phrases
     trace.optimized_token_count = estimate_word_tokens(compressed)
+    trace.optimized_bpe_tokens = estimate_tokens(compressed)
+
     if trace.raw_token_count > 0:
         trace.query_token_savings_pct = round(
             (trace.raw_token_count - trace.optimized_token_count) / trace.raw_token_count * 100.0,
             1,
         )
+    if trace.raw_bpe_tokens > 0:
+        trace.query_bpe_savings_pct = round(
+            (trace.raw_bpe_tokens - trace.optimized_bpe_tokens) / trace.raw_bpe_tokens * 100.0,
+            1,
+        )
+
+    logs.append(
+        f"[Stage 1 | {s1_ms}ms] Lexical & Extractive Compression ({intensity}): "
+        f"{trace.raw_token_count} -> {trace.optimized_token_count} words (-{trace.query_token_savings_pct}%), "
+        f"BPE: {trace.raw_bpe_tokens} -> {trace.optimized_bpe_tokens} (-{trace.query_bpe_savings_pct}%). "
+        f"Stripped={stripped or 'none'}, Normalized={normalized_phrases or 'none'}"
+    )
 
     # ── Stage 2: Weighted Intent Routing & Deterministic Entity Extraction ───
+    s2_t0 = time.perf_counter()
     intent, confidence, secondary_intents = _route_intent(
         cleaned_text=compressed,
         raw_text=request.text,
@@ -1379,12 +1399,18 @@ def optimize(request: RawRequest, few_shot_k: int = 2) -> CompiledPrompt:
     negations = _extract_negations(compressed)
     negation_spans = _extract_negation_spans(compressed)
     entities = _extract_entities(raw_text=request.text, cleaned_text=compressed)
+    s2_ms = round((time.perf_counter() - s2_t0) * 1000, 3)
 
     trace.detected_intent = intent
     trace.secondary_intents = secondary_intents
     trace.intent_confidence = confidence
     trace.negations = negations
     trace.extracted_entities = entities
+
+    logs.append(
+        f"[Stage 2 | {s2_ms}ms] Intent Router & Slot Extractor: intent={intent} (conf={confidence}), "
+        f"negations={negation_spans or negations or 'none'}, entities={entities or 'none'}"
+    )
 
     # ── Step 6: Deterministic Prompt Cache Lookup ────────────────────────────
     context_chunks = getattr(request, "context_chunks", None) or []
@@ -1416,12 +1442,17 @@ def optimize(request: RawRequest, few_shot_k: int = 2) -> CompiledPrompt:
             cached_result.trace.cache_hit = True
             cached_result.trace.cache_type = cache_type
             cached_result.trace.latency_ms = round((time.perf_counter() - t0) * 1000, 3)
+            cached_result.trace.stage_logs = list(cached_result.trace.stage_logs) + [
+                f"[Cache HIT | {cached_result.trace.latency_ms}ms] {cache_type} (key={canonical_key}, simhash={trace.simhash_signature})"
+            ]
             return cached_result
 
     # Early short-circuit if required slots are missing
     missing = _check_required_slots(intent, entities)
     if missing:
         trace.latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+        logs.append(f"[Short-Circuit | {trace.latency_ms}ms] Missing mandatory slots for {intent}: {missing}")
+        trace.stage_logs = logs
         res = CompiledPrompt(
             payload="",
             trace=trace,
@@ -1435,6 +1466,7 @@ def optimize(request: RawRequest, few_shot_k: int = 2) -> CompiledPrompt:
         return res
 
     # ── Step 2 + Step 3 + Step 7: MMR Pruning, Tool Schema Compression & History ──
+    s3_t0 = time.perf_counter()
     tools, tool_tokens_saved = _select_and_compress_tools(
         compressed,
         intent=intent,
@@ -1457,6 +1489,28 @@ def optimize(request: RawRequest, few_shot_k: int = 2) -> CompiledPrompt:
         conversation_history,
         history_budget=budget.history_budget,
     )
+    s3_ms = round((time.perf_counter() - s3_t0) * 1000, 3)
+
+    # Calculate per-section before/after token telemetry
+    trace.total_context_chunks = len(context_chunks)
+    trace.raw_context_tokens = estimate_tokens("\n---\n".join(context_chunks)) if context_chunks else 0
+    trace.pruned_context_tokens = estimate_tokens(pruned_context) if context_chunks else 0
+    if trace.raw_context_tokens > 0:
+        trace.context_token_savings_pct = round(
+            max(0, trace.raw_context_tokens - trace.pruned_context_tokens) / trace.raw_context_tokens * 100.0,
+            1,
+        )
+
+    raw_hist_str = "\n".join(f"{t.get('role', 'user')}: {t.get('content', '')}" for t in conversation_history)
+    trace.raw_history_tokens = estimate_tokens(raw_hist_str) if conversation_history else 0
+    trace.pruned_history_tokens = estimate_tokens(pruned_history) if conversation_history else 0
+
+    raw_tools_all = "\n".join(f"- {t['id']}: {t['schema']}" for t in TOOL_REGISTRY)
+    trace.raw_tools_tokens = estimate_tokens(raw_tools_all)
+    trace.compressed_tools_tokens = estimate_tokens(_format_tools(tools)) if tools else 0
+
+    trace.raw_examples_tokens = estimate_tokens(_format_examples(FEW_SHOT_EXAMPLES))
+    trace.selected_examples_tokens = estimate_tokens(_format_examples(examples)) if examples else 0
 
     trace.tool_schema_tokens_saved = tool_tokens_saved
     trace.injected_tool_ids = [t["id"] for t in tools]
@@ -1464,7 +1518,16 @@ def optimize(request: RawRequest, few_shot_k: int = 2) -> CompiledPrompt:
     trace.kept_context_indices = kept_ctx_indices
     trace.kept_history_turns = kept_hist_turns
 
+    logs.append(
+        f"[Stage 3 | {s3_ms}ms] MMR Pruning & Schema Compression: "
+        f"Context chunks kept={kept_ctx_indices}/{len(context_chunks)} "
+        f"({trace.raw_context_tokens} -> {trace.pruned_context_tokens} toks, -{trace.context_token_savings_pct}%), "
+        f"Tools={[t['id'] for t in tools] or 'none'} (saved {tool_tokens_saved} schema toks), "
+        f"Few-Shots={[e['id'] for e in examples]}"
+    )
+
     # ── Stage 4 + Step 1: Budget-Checked Structural Compilation ──────────────
+    s4_t0 = time.perf_counter()
     guardrail_block = "\n".join(f"{i+5}. {r}" for i, r in enumerate(GUARDRAIL_RULES))
     history_xml = (
         f"\n<conversation_history>\n{_sanitize_xml_payload(pruned_history)}\n</conversation_history>\n"
@@ -1493,6 +1556,7 @@ def optimize(request: RawRequest, few_shot_k: int = 2) -> CompiledPrompt:
     if estimate_tokens(payload) > budget.max_total_tokens and len(examples) > 1:
         examples = examples[:1]
         trace.injected_example_ids = [e["id"] for e in examples]
+        trace.selected_examples_tokens = estimate_tokens(_format_examples(examples))
         payload = _COMPILED_TEMPLATE.format(
             guardrails=guardrail_block,
             intent=intent,
@@ -1506,6 +1570,7 @@ def optimize(request: RawRequest, few_shot_k: int = 2) -> CompiledPrompt:
             query=compressed,
             output_format=_infer_output_format(intent),
         )
+    s4_ms = round((time.perf_counter() - s4_t0) * 1000, 3)
 
     trace.compiled_payload_token_count = estimate_tokens(payload)
     if trace.unoptimized_payload_token_count > 0:
@@ -1517,6 +1582,13 @@ def optimize(request: RawRequest, few_shot_k: int = 2) -> CompiledPrompt:
         )
 
     trace.latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+    logs.append(
+        f"[Stage 4 | {s4_ms}ms] XML Guardrail Compilation: "
+        f"Total Payload {trace.unoptimized_payload_token_count} -> {trace.compiled_payload_token_count} BPE tokens "
+        f"(-{trace.payload_token_savings_pct}%) in {trace.latency_ms}ms total."
+    )
+    trace.stage_logs = logs
+
     result = CompiledPrompt(payload=payload, trace=trace, status="OK")
 
     if enable_cache:

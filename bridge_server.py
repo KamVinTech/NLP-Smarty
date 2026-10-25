@@ -11,6 +11,7 @@ Commands supported over stdin/stdout JSON-Lines:
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import json
 import os
 import re
@@ -31,6 +32,41 @@ except Exception:
 
 
 DEFAULT_HF_MODEL = os.environ.get("HF_MODEL_ID", "Qwen/Qwen2.5-Coder-32B-Instruct")
+
+
+def _emit_stderr_audit_log(req_id: str, cmd: str, raw_prompt: str, trace_dict: dict[str, Any]) -> None:
+    """
+    Writes a structured, human-readable audit log block to sys.stderr (which is
+    streamed live into the VS Code 'NLP-Smarty Optimizer' Output Channel) AND appends
+    to `.nlp_smarty_optimization.log` in the engine working directory.
+    """
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    lines = [
+        f"\n================ [NLP-Smarty Audit Log | {ts} | req={req_id} | cmd={cmd}] ================",
+        f"  RAW PROMPT      : {raw_prompt!r}",
+        f"  COMPRESSED CORE : {trace_dict.get('compressed_query_text', '')!r}",
+        f"  INTENT & MODE   : {trace_dict.get('detected_intent')} (conf={trace_dict.get('intent_confidence')}, intensity={trace_dict.get('compression_intensity_used')})",
+        f"  QUERY STATS     : {trace_dict.get('raw_token_count')} -> {trace_dict.get('optimized_token_count')} words (-{trace_dict.get('query_token_savings_pct')}%) | BPE: {trace_dict.get('raw_bpe_tokens')} -> {trace_dict.get('optimized_bpe_tokens')} toks (-{trace_dict.get('query_bpe_savings_pct')}%)",
+        f"  CONTEXT MMR     : kept chunks {trace_dict.get('kept_context_indices')}/{trace_dict.get('total_context_chunks')} ({trace_dict.get('raw_context_tokens')} -> {trace_dict.get('pruned_context_tokens')} toks, -{trace_dict.get('context_token_savings_pct')}%)",
+        f"  TOOL SCHEMAS    : {trace_dict.get('raw_tools_tokens')} -> {trace_dict.get('compressed_tools_tokens')} toks (saved {trace_dict.get('tool_schema_tokens_saved')} schema toks, injected={trace_dict.get('injected_tool_ids')})",
+        f"  FEW-SHOT MMR    : {trace_dict.get('raw_examples_tokens')} -> {trace_dict.get('selected_examples_tokens')} toks (injected={trace_dict.get('injected_example_ids')})",
+        f"  TOTAL PAYLOAD   : {trace_dict.get('unoptimized_payload_token_count')} -> {trace_dict.get('compiled_payload_token_count')} BPE toks (-{trace_dict.get('payload_token_savings_pct')}%)",
+        f"  CACHE & LATENCY : hit={trace_dict.get('cache_hit')} ({trace_dict.get('cache_type')}, key={trace_dict.get('cache_key')}) | {trace_dict.get('latency_ms')} ms",
+    ]
+    for s_log in trace_dict.get("stage_logs") or []:
+        lines.append(f"    -> {s_log}")
+    lines.append("=" * 94)
+    block = "\n".join(lines) + "\n"
+
+    sys.stderr.write(block)
+    sys.stderr.flush()
+
+    try:
+        log_path = os.path.join(os.getcwd(), ".nlp_smarty_optimization.log")
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(block)
+    except Exception:
+        pass
 
 
 def _call_hf_or_simulate(prompt_text: str, model_id: str | None = None) -> tuple[str, float, str]:
@@ -71,7 +107,7 @@ def _call_hf_or_simulate(prompt_text: str, model_id: str | None = None) -> tuple
             )
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                content = data["choices"][0]["message"]["content"]
+                content = data["choices"][0].message.content
                 return content.strip(), round((time.perf_counter() - t0) * 1000, 2), f"hf_http ({target_model})"
         except Exception as exc:
             return f"[HF HTTP Error: {exc}]", round((time.perf_counter() - t0) * 1000, 2), f"hf_http_error ({target_model})"
@@ -101,16 +137,22 @@ def _call_hf_or_simulate(prompt_text: str, model_id: str | None = None) -> tuple
 def _builtin_compare_raw_vs_optimized(request: RawRequest, model_id: str | None = None) -> dict[str, Any]:
     if _external_compare_hf is not None:
         try:
-            return _external_compare_hf(request, model_id=model_id)
+            res = _external_compare_hf(request, model_id=model_id)
+            if "trace" in res:
+                _emit_stderr_audit_log("compare_hf", "compare_hf", request.text, res["trace"])
+            return res
         except Exception:
             pass
 
     compiled = optimize(request)
+    trace_dict = dataclasses.asdict(compiled.trace)
+    _emit_stderr_audit_log("compare_hf", "compare_hf", request.text, trace_dict)
+
     if compiled.status != "OK":
         return {
             "status": compiled.status,
             "clarification_request": compiled.clarification_request,
-            "trace": dataclasses.asdict(compiled.trace),
+            "trace": trace_dict,
         }
 
     raw_parts = []
@@ -139,7 +181,7 @@ def _builtin_compare_raw_vs_optimized(request: RawRequest, model_id: str | None 
         "optimized_response": opt_answer,
         "optimized_llm_latency_ms": opt_llm_ms,
         "optimized_audit": audit_agent_response(opt_answer, compiled.trace),
-        "trace": dataclasses.asdict(compiled.trace),
+        "trace": trace_dict,
     }
 
 
@@ -209,6 +251,8 @@ def handle_request(req_data: dict[str, Any]) -> dict[str, Any]:
 
     if cmd == "clear_cache":
         PROMPT_CACHE.clear()
+        sys.stderr.write(f"[NLP-Smarty Audit Log] Cache cleared (req={req_id})\n")
+        sys.stderr.flush()
         return {"id": req_id, "ok": True, "message": "Cache cleared"}
 
     if cmd == "ping":
@@ -223,6 +267,8 @@ def handle_request(req_data: dict[str, Any]) -> dict[str, Any]:
 
     if cmd == "audit_pair":
         compiled = optimize(raw_req, few_shot_k=int(req_data.get("few_shot_k", 2)))
+        trace_dict = dataclasses.asdict(compiled.trace)
+        _emit_stderr_audit_log(req_id, "audit_pair", raw_req.text, trace_dict)
         raw_resp = str(req_data.get("raw_response", ""))
         opt_resp = str(req_data.get("optimized_response", ""))
         return {
@@ -230,17 +276,20 @@ def handle_request(req_data: dict[str, Any]) -> dict[str, Any]:
             "ok": True,
             "raw_audit": audit_agent_response(raw_resp, compiled.trace),
             "optimized_audit": audit_agent_response(opt_resp, compiled.trace),
-            "trace": dataclasses.asdict(compiled.trace),
+            "trace": trace_dict,
         }
 
     compiled = optimize(raw_req, few_shot_k=int(req_data.get("few_shot_k", 2)))
+    trace_dict = dataclasses.asdict(compiled.trace)
+    _emit_stderr_audit_log(req_id, "optimize", raw_req.text, trace_dict)
+
     return {
         "id": req_id,
         "ok": True,
         "status": compiled.status,
         "clarification_request": compiled.clarification_request,
         "payload": compiled.payload,
-        "trace": dataclasses.asdict(compiled.trace),
+        "trace": trace_dict,
     }
 
 
@@ -258,6 +307,8 @@ def main() -> None:
             req_id = payload.get("id", "unknown")
             response = handle_request(payload)
         except Exception as exc:
+            sys.stderr.write(f"[NLP-Smarty ERROR | req={req_id}] {exc}\n{traceback.format_exc()}\n")
+            sys.stderr.flush()
             response = {
                 "id": req_id,
                 "ok": False,
