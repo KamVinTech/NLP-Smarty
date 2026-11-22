@@ -5,8 +5,9 @@ on:
   pull_request:
 jobs:
   python:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest (26.04) has no Python 3.9 for setup-python
     strategy:
+      fail-fast: false  # a failure on one Python version must not cancel the others
       matrix:
         python: ["3.9", "3.11", "3.13"]
     steps:
@@ -21,7 +22,7 @@ jobs:
       - run: echo '{"id":"1","command":"ping"}' | python bridge_server.py
       - run: python eval_retrieval.py -n 10 --min-recall5 0.0
   extension:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest (26.04) has no Python 3.9 for setup-python
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
