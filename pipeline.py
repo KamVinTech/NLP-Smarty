@@ -1243,7 +1243,7 @@ def _compute_simhash64(tokens: list[str]) -> int:
 
 
 def _hamming_distance64(a: int, b: int) -> int:
-    return (a ^ b).bit_count()
+    return bin(a ^ b).count("1")  # py3.9-safe; int.bit_count is 3.10+
 
 
 class PromptCache:

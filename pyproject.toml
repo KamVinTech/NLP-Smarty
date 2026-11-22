@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nlp-smarty"
+version = "0.6.0"
+description = "Deterministic, zero-LLM prompt optimizer and repo-intelligence layer (hooks + MCP) for coding agents"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+# Optional accelerators; every module has a zero-dependency fallback.
+nlp = ["spacy", "flashtext", "rank-bm25"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+smarty = "smarty_cli:main"
+smarty-mcp = "mcp_server:main"
+smarty-hook = "smarty_hook:main"
+
+[tool.setuptools]
+py-modules = ["app", "bridge_server", "data_contracts", "eval_retrieval", "mcp_server", "pipeline", "protocol",
+              "registry", "repo_indexer", "smarty_cli", "smarty_hook"]

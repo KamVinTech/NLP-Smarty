@@ -426,3 +426,21 @@ FEW_SHOT_EXAMPLES.append({
 | `@types/vscode ^1.90.0` | VS Code extension API types |
 | `@types/node ^20.0.0` | Node.js built-in types (`child_process`, `path`, `readline`, `buffer`, `process`) |
 | `typescript ^5.4.0` | TypeScript compiler |
+
+## Repo Intelligence for Coding Agents (`smarty`)
+
+Zero-LLM, stdlib-only. Indexes your repo (symbols + line spans, hash-checked so spans never go stale), then delivers a small
+budgeted `<retrieved_context>` capsule to the agent via a Claude Code `UserPromptSubmit` hook and an MCP server.
+
+```bash
+python smarty_cli.py init --dry-run          # preview every change as a diff
+python smarty_cli.py init --agents-md        # hooks + MCP + index (+ static CLAUDE.md/AGENTS.md block)
+python smarty_cli.py doctor                  # verify end to end
+python smarty_cli.py uninstall [--purge]     # remove only what init added
+```
+
+- Hooks go to `.claude/settings.local.json` (machine-specific, git-excluded); use `--scope project` to share them.
+- `init` is idempotent, merges into existing JSON (aborts on unparseable files), and keeps one-time backups in `.smarty/backups/`.
+- MCP tools: `smarty_get_context`, `smarty_find_symbol`, `smarty_repo_map`, `smarty_get_slice` (+ the original optimizer tools).
+- Measure retrieval quality: `python eval_retrieval.py --golden` (hand-labelled queries) or without flags (git history).
+- `pip install .` provides `smarty`, `smarty-mcp` and `smarty-hook` commands.

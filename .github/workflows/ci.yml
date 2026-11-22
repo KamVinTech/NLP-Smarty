@@ -1,0 +1,31 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 30  # eval_retrieval.py walks git history
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest
+      - run: echo '{"id":"1","command":"ping"}' | python bridge_server.py
+      - run: python eval_retrieval.py -n 10 --min-recall5 0.0
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run compile
