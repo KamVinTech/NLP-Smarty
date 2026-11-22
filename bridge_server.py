@@ -23,6 +23,10 @@ from typing import Any
 
 from data_contracts import RawRequest, TokenBudget
 from pipeline import PROMPT_CACHE, audit_agent_response, estimate_tokens, optimize
+from protocol import (
+    E_INTERNAL, E_INVALID_JSON, PROTOCOL_VERSION, ProtocolError,
+    capabilities, error_response, validate_request,
+)
 
 # Try importing user's custom `app.py` consumer if present; otherwise use built-in HF runner
 try:
@@ -263,6 +267,9 @@ def handle_request(req_data: dict[str, Any]) -> dict[str, Any]:
     if cmd == "ping":
         return {"id": req_id, "ok": True, "message": "pong"}
 
+    if cmd == "capabilities":
+        return {"id": req_id, "ok": True, **capabilities()}
+
     raw_req = _build_raw_request(req_data)
 
     if cmd == "compare_hf":
@@ -298,29 +305,37 @@ def handle_request(req_data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def process_line(line: str) -> dict[str, Any]:
+    """Parse, validate and dispatch one JSON-Lines request; never raises."""
+    req_id: Any = "unknown"
+    try:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ProtocolError(E_INVALID_JSON, f"invalid JSON: {exc}")
+        if isinstance(payload, dict):
+            req_id = payload.get("id", "unknown")
+        validate_request(payload)
+        response = handle_request(payload)
+        response.setdefault("protocol_version", PROTOCOL_VERSION)
+        return response
+    except ProtocolError as exc:
+        return error_response(req_id, exc.code, exc.message)
+    except Exception as exc:
+        sys.stderr.write(f"[NLP-Smarty ERROR | req={req_id}] {exc}\n{traceback.format_exc()}\n")
+        sys.stderr.flush()
+        return error_response(req_id, E_INTERNAL, str(exc), traceback=traceback.format_exc())
+
+
 def main() -> None:
-    sys.stdout.write(json.dumps({"id": "init", "ok": True, "status": "READY"}) + "\n")
+    sys.stdout.write(json.dumps({"id": "init", "ok": True, "status": "READY", "protocol_version": PROTOCOL_VERSION}) + "\n")
     sys.stdout.flush()
 
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
-        req_id = "unknown"
-        try:
-            payload = json.loads(line)
-            req_id = payload.get("id", "unknown")
-            response = handle_request(payload)
-        except Exception as exc:
-            sys.stderr.write(f"[NLP-Smarty ERROR | req={req_id}] {exc}\n{traceback.format_exc()}\n")
-            sys.stderr.flush()
-            response = {
-                "id": req_id,
-                "ok": False,
-                "error": str(exc),
-                "traceback": traceback.format_exc(),
-            }
-        sys.stdout.write(json.dumps(response) + "\n")
+        sys.stdout.write(json.dumps(process_line(line)) + "\n")
         sys.stdout.flush()
 
 
