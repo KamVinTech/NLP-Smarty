@@ -71,3 +71,17 @@ def test_project_dir_beats_event_cwd(repo, monkeypatch, tmp_path_factory):
     res = smarty_hook.process(ev("charge credit card amount", cwd=str(other)))
     assert res and "charge_card" in ctx(res)
     assert not (other / ".smarty").exists()  # never indexes/pollutes the event cwd
+
+
+def test_system_reminder_wrapper_is_not_searched(tmp_path, monkeypatch):
+    """Real-session regression: the app prefixes prompts with a <system-reminder> naming the worktree path; those words
+    matched README headings and injected irrelevant docs."""
+    (tmp_path / "README.md").write_text("# Acme Test Framework\nintro\n")
+    (tmp_path / "svc.py").write_text("def charge_card(amount):\n    return amount\n")
+    monkeypatch.setenv("SMARTY_ROOT", str(tmp_path))
+    wrapped = ("<system-reminder>\nYou are operating in a git worktree.\nWorktree path: /x/Acme-Test-Framework/.claude/"
+               "worktrees/w1\nWorktree name: w1\n</system-reminder>\n\n list the tools you have")
+    assert smarty_hook.process(ev(wrapped)) is None
+    assert smarty_hook.clean_prompt(wrapped) == "list the tools you have"
+    real = smarty_hook.process(ev("<system-reminder>\nnoise Acme Framework\n</system-reminder>\ncharge the card amount"))
+    assert real and "charge_card" in ctx(real)
