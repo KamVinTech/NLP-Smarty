@@ -280,3 +280,157 @@ def test_golden_top1_floor():
 
     g = ev.evaluate_golden(ROOT)["all"]
     assert g["recall@5"] >= 0.9 and g["top1"] >= 0.7, g
+
+
+# ── TypeScript parser regressions (found by running against a real TS repo) ──
+TS_REAL = '''import { MCPTool } from './types';
+
+export class OptimizeTool implements MCPTool {
+  name = 'optimize';
+  parameters = {
+    type: 'object',
+    properties: { dir: { type: 'string' } },
+  };
+
+  constructor(private readonly cfg: Config) {}
+
+  async execute(params: {
+    testDirectory: string;
+    include?: string[];
+  }): Promise<Result> {
+    const files = await this.findFiles(params.testDirectory);
+    return this.build(files);
+  }
+
+  private build(files: string[]): string {
+    const scan = async (dir: string) => {
+      return dir;
+    };
+    return `Prompt with { braces } and ${files.length} files {
+      still inside the template } } }
+    `;
+  }
+
+  private findFiles = async (d: string): Promise<string[]> => {
+    return [d];
+  };
+
+  private pattern(): RegExp {
+    return /[{}]+\\/x/;
+  }
+
+  helper(x: number): number { return x + 1; }
+}
+
+export const topLevel = async (n: number) => {
+  return n;
+};
+
+function plain(a: string) {
+  return a;
+}
+'''
+
+
+def test_ts_multiline_template_literal_does_not_break_class_span():
+    s = _syms("ts", TS_REAL)
+    cls = s["OptimizeTool"]
+    lines = TS_REAL.split("\n")
+    last_brace = max(i for i, l in enumerate(lines[: lines.index("export const topLevel = async (n: number) => {")], 1) if l == "}")
+    assert cls["kind"] == "class" and cls["start"] == 3 and cls["end"] == last_brace  # closes at the real final brace
+
+
+def test_ts_members_multiline_signature_property_fn_and_single_line():
+    s = _syms("ts", TS_REAL)
+    for m in ("constructor", "execute", "build", "findFiles", "pattern", "helper"):
+        assert f"OptimizeTool.{m}" in s, m
+    ex = s["OptimizeTool.execute"]
+    lines = TS_REAL.split("\n")
+    first = lines.index("  async execute(params: {") + 1
+    closing = next(i for i, l in enumerate(lines, 1) if i > first and l == "  }")
+    assert (ex["start"], ex["end"]) == (first, closing)  # multi-line `params: {` signature spans to the method's closing brace
+    assert s["OptimizeTool.helper"]["start"] == s["OptimizeTool.helper"]["end"]
+    assert "findFiles" in s["OptimizeTool.execute"]["calls"] and "build" in s["OptimizeTool.execute"]["calls"]
+
+
+def test_ts_ignores_nested_helpers_and_class_property_object_literals():
+    s = _syms("ts", TS_REAL)
+    assert "scan" not in s and "name" not in s and "parameters" not in s  # locals / properties are not symbols
+    assert {"topLevel", "plain"} <= set(s)
+
+
+SPEC = '''import { test, expect } from '@playwright/test';
+
+test.describe('Login Functionality', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+  });
+
+  test('should login successfully with valid credentials', async ({ page }) => {
+    await expect(page).toHaveURL('/home');
+  });
+
+  test.skip('should remember the user', async () => {});
+
+  test.describe('nested group', () => {
+    it(`handles ${'x'} titles`, () => {});
+  });
+});
+
+describe('top suite', () => {
+  it('works', () => {});
+});
+'''
+
+
+def test_ts_playwright_jest_tests_are_indexed_with_suite_prefix():
+    s = _syms("ts", SPEC)
+    assert s["Login Functionality"]["kind"] == "suite"
+    assert "Login Functionality > should login successfully with valid credentials" in s
+    assert "Login Functionality > should remember the user" in s
+    assert s["Login Functionality > nested group"]["kind"] == "suite"
+    assert s["top suite > works"]["kind"] == "test"
+    assert not any("beforeEach" in n for n in s)
+
+
+def test_ts_mask_preserves_length_and_lines():
+    masked = ri._mask_ts(TS_REAL + SPEC)
+    assert len(masked) == len(TS_REAL + SPEC) and masked.count("\n") == (TS_REAL + SPEC).count("\n")
+    assert "Prompt with" not in masked and "still inside" not in masked
+
+
+def test_test_titles_are_searchable(tmp_path):
+    root = _mk(tmp_path, {"tests/login.spec.ts": SPEC})
+    out = ri.search(root, "login successfully with valid credentials", recency=False)
+    assert out["hits"] and out["hits"][0]["kind"] == "test"
+
+
+def test_name_matches_outrank_long_docstrings(tmp_path, monkeypatch):
+    """A symbol whose NAME holds the query terms should beat one that merely repeats them in a long docstring."""
+    stuff = "run test tool grep pattern " * 12
+    root = _mk(tmp_path, {
+        "a.py": "def run_test_tool(x):\n    return x\n",
+        "b.py": f'def summarize_logs(x):\n    """{stuff}"""\n    return x\n',
+    })
+    assert ri.search(root, "run test tool grep pattern", recency=False)["hits"][0]["name"] == "run_test_tool"
+    monkeypatch.setattr(ri, "NAME_MATCH_BOOST", 0.0)
+    assert ri.search(root, "run test tool grep pattern", recency=False)["hits"][0]["name"] == "summarize_logs"  # boost is what flips it
+
+
+def test_doc_headings_do_not_satisfy_the_code_gate(tmp_path):
+    root = _mk(tmp_path, {"README.md": "# Acme Test Framework\nintro\n## Framework Overview\nmore\n",
+                          "svc.py": "def charge_card(amount):\n    return amount\n"})
+    assert ri.build_capsule(root, "acme test framework overview")["reason"] != "ok"
+    assert ri.build_capsule(root, "readme acme framework overview")["reason"] == "ok"  # asking about docs re-enables them
+
+
+def test_path_like_words_do_not_trigger_test_intent(tmp_path):
+    root = _mk(tmp_path, {"tests/test_dir.py": "def test_git_directory_works():\n    pass\n",
+                          "util.py": "def other():\n    pass\n"})
+    q = "my working directory is /home/u/Acme-Test-Framework and it is a git repository"
+    assert ri.build_capsule(root, q)["reason"] != "ok"  # 'Test' inside a kebab-case path is not a request about tests
+    assert ri.build_capsule(root, "test git directory works")["reason"] == "ok"  # a real test question still passes
+
+
+def test_default_floor_blocks_weak_matches():
+    assert ri.MIN_CONFIDENCE == 0.34
