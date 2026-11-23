@@ -23,7 +23,7 @@ import subprocess
 import sys
 from typing import Any, Iterable, Iterator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 INDEX_DIR = ".smarty"
 DB_NAME = "index.db"
 
@@ -39,7 +39,8 @@ MAX_FILE_BYTES = 1_000_000
 STOPWORDS = frozenset(
     "a an the and or of to in on for with without from by is are was were be been this that it its as at "
     "into over under please can could would should how what why when where which who i me my we our you "
-    "your do does did done make get set use using add fix update change new code file files function".split()
+    "your do does did done make get set use using add fix update change new code file files function "
+    "so then also just but if than too very really some any".split()
 )
 
 # Retrieval tuning (defaults; to be tuned with eval_retrieval.py, not guessed)
@@ -48,13 +49,14 @@ RECENCY_BOOST = 1.35
 TEST_PENALTY = 0.6  # demote tests/specs unless the query is about tests
 _TEST_PATH_RE = re.compile(r"(^|/)(tests?|__tests__|spec)/|(^|/)test_[^/]*$|[._]test\.[a-z]+$|[._]spec\.[a-z]+$")
 MAX_PER_FILE = 2
+NAME_MATCH_BOOST = 0.3         # rank bonus per distinct query term in a symbol's NAME (0 = pure BM25); +0.12 top-1 on an unseen TS repo, neutral here
 # Graph / doc levers (set to 1.0 / 0.0 to disable; tuned by eval_retrieval.py --golden, not guessed)
 GRAPH_CALLEE_BOOST = 1.25      # a hit that is called by another hit is probably the real implementation
 IMPORT_NEIGHBOR_BOOST = 1.15   # a hit in a file imported by another matching file
 CENTRALITY_WEIGHT = 0.08       # mild prior for files many others import: 1 + w*log1p(in-degree)
 DOC_PENALTY = 0.85             # markdown sections rank below code unless the query is about docs
 _DOC_QUERY_TERMS = frozenset({"readme", "doc", "documentation", "markdown", "changelog", "guide"})
-MIN_CONFIDENCE = 0.34
+MIN_CONFIDENCE = 0.34  # 0.25 let weak chatty-prompt matches through in real sessions
 
 
 # ── token estimation ──────────────────────────────────────────────────────────
@@ -258,32 +260,170 @@ def _parse_python_regex(src: str) -> list[dict]:
 _TS_DECL = re.compile(
     r"^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?"
     r"(?P<kind>class|interface|enum|type|namespace)\s+(?P<name>\w+)")
-_TS_FUNC = re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\*?\s*(?P<name>\w+)\s*[(<]")
+_TS_FUNC = re.compile(r"^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\*?\s*(?P<name>\w+)\s*[(<]")
 _TS_ARROW = re.compile(
-    r"^\s*(?:export\s+)?(?:const|let)\s+(?P<name>\w+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]+?)?=>")
-_TS_METHOD = re.compile(
-    r"^\s{2,}(?:(?:public|private|protected|static|async|readonly|override|abstract|get|set)\s+)*"
-    r"(?P<name>\w+)\s*(?:<[^>]*>)?\s*\([^)]*\)\s*(?::\s*[^{;]+)?\{\s*$")
-_TS_NOT_METHOD = {"if", "for", "while", "switch", "catch", "return", "function", "constructor_", "else", "do", "try"}
+    r"^(?:export\s+)?(?:const|let)\s+(?P<name>\w+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]+?)?=>")
+_MODS = r"(?:(?:public|private|protected|static|async|readonly|override|abstract|get|set)\s+)*"
+_TS_MEMBER = re.compile(r"^\s*" + _MODS + r"(?P<name>[A-Za-z_$][\w$]*)\s*(?:<[^>(]*>)?\s*\(")
+_TS_PROP_FN = re.compile(
+    r"^\s*" + _MODS + r"(?P<name>[A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s*)?"
+    r"(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]+?)?=>")
+_TS_TEST = re.compile(r"^\s*(?P<fn>test|it|describe|suite)(?:\.(?:describe|only|skip|serial|parallel|fixme|slow))*\s*\(\s*['\"`]")
+_TS_TEST_TITLE = re.compile(r"""^\s*(?:test|it|describe|suite)(?:\.\w+)*\s*\(\s*(?P<q>['"`])(?P<title>.*?)(?P=q)""")
+_TS_KEYWORDS = frozenset(
+    "if for while switch catch return function else do try new await super typeof delete throw import require "
+    "with yield".split())
+_TS_CALL_STOP = _TS_KEYWORDS | frozenset(
+    "push map filter join then log error warn info from keys values entries resolve reject some find includes split "
+    "slice trim replace expect async Promise String Number Boolean Object Array Error JSON parse stringify forEach "
+    "reduce get set has add delete test describe it".split())
 _TS_IMPORT = re.compile(r"""(?:from\s+|require\()\s*['"]([^'"]+)['"]""")
 
 
-def _brace_end(lines: list[str], start_idx: int) -> int:
-    depth, seen = 0, False
-    for j in range(start_idx, min(len(lines), start_idx + 2000)):
-        stripped = re.sub(r"""(['"`])(?:\\.|(?!\1).)*\1""", "", lines[j])
-        stripped = re.sub(r"//.*$", "", stripped)
-        for ch in stripped:
-            if ch == "{":
-                depth += 1
-                seen = True
-            elif ch == "}":
-                depth -= 1
-        if seen and depth <= 0:
-            return j + 1
-        if not seen and j - start_idx >= 3:
-            return start_idx + 1
-    return start_idx + 1
+def _mask_ts(src: str) -> str:
+    """Blank out string/template/comment/regex contents (keeping newlines, braces of real code and quote delimiters)
+    so brace/paren counting and structural regexes can't be fooled by literals. Output has the same length."""
+    out: list[str] = []
+    i, n = 0, len(src)
+    tpl: list[int] = []          # brace depth per active `${ ... }` expression inside template literals
+    mode = "code"                # code | sq | dq | tpl | line | block | regex
+    prev = ""                    # last significant code char (regex-vs-division heuristic)
+    in_class = False             # inside [...] of a regex literal
+
+    def blank(c: str) -> str:
+        return c if c == "\n" else " "
+
+    while i < n:
+        c = src[i]
+        nxt = src[i + 1] if i + 1 < n else ""
+        vis = not tpl            # delimiters stay visible only for top-level literals
+        if mode == "code":
+            if c in "'\"":
+                mode = "sq" if c == "'" else "dq"
+                out.append(c if vis else " ")
+            elif c == "`":
+                mode = "tpl"
+                out.append(c if vis else " ")
+            elif c == "/" and nxt == "/":
+                mode = "line"
+                out.append("  ")
+                i += 1
+            elif c == "/" and nxt == "*":
+                mode = "block"
+                out.append("  ")
+                i += 1
+            elif c == "/" and (prev == "" or prev in "(,=:[!&|?{};"):
+                mode, in_class = "regex", False
+                out.append(c if vis else " ")
+            elif tpl:
+                if c == "{":
+                    tpl[-1] += 1
+                elif c == "}":
+                    if tpl[-1] == 0:
+                        tpl.pop()
+                        mode = "tpl"
+                    else:
+                        tpl[-1] -= 1
+                out.append(blank(c))
+            else:
+                out.append(c)
+                if not c.isspace():
+                    prev = c
+        elif mode in ("sq", "dq"):
+            q = "'" if mode == "sq" else '"'
+            if c == "\\":
+                out.append(blank(c) + (blank(nxt) if nxt else ""))
+                i += 1
+            elif c == q:
+                mode, prev = "code", "a"
+                out.append(c if vis else " ")
+            elif c == "\n":
+                mode = "code"
+                out.append("\n")
+            else:
+                out.append(" ")
+        elif mode == "tpl":
+            if c == "\\":
+                out.append(blank(c) + (blank(nxt) if nxt else ""))
+                i += 1
+            elif c == "`":
+                mode, prev = "code", "a"
+                out.append(c if vis else " ")
+            elif c == "$" and nxt == "{":
+                tpl.append(0)
+                mode = "code"
+                out.append("  ")
+                i += 1
+            else:
+                out.append(blank(c))
+        elif mode == "line":
+            if c == "\n":
+                mode = "code"
+            out.append(blank(c))
+        elif mode == "block":
+            if c == "*" and nxt == "/":
+                mode = "code"
+                out.append("  ")
+                i += 1
+            else:
+                out.append(blank(c))
+        else:  # regex literal
+            if c == "\\":
+                out.append(blank(c) + (blank(nxt) if nxt else ""))
+                i += 1
+            elif c == "\n":
+                mode = "code"
+                out.append("\n")
+            elif c == "[":
+                in_class = True
+                out.append(" ")
+            elif c == "]":
+                in_class = False
+                out.append(" ")
+            elif c == "/" and not in_class:
+                mode, prev = "code", "a"
+                out.append(c if vis else " ")
+            else:
+                out.append(" ")
+        i += 1
+    return "".join(out)
+
+
+def _depths(masked: list[str]) -> tuple[list[int], list[int], list[int]]:
+    """Per line: brace depth before/after the line, and paren+bracket depth before the line."""
+    before, after, pbefore = [], [], []
+    d = p = 0
+    for ln in masked:
+        before.append(d)
+        pbefore.append(p)
+        d += ln.count("{") - ln.count("}")
+        p += ln.count("(") + ln.count("[") - ln.count(")") - ln.count("]")
+        after.append(d)
+    return before, after, pbefore
+
+
+def _span_end(masked: list[str], before: list[int], after: list[int], i: int) -> int:
+    """0-based index of the line where the construct starting at line i closes (depth returns to its start level)."""
+    base = before[i]
+    scan_from = i + 1
+    if after[i] <= base:  # no opening brace here: maybe Allman style (`{` on the next line)
+        j = i + 1
+        while j < len(masked) and not masked[j].strip():
+            j += 1
+        if j < len(masked) and masked[j].lstrip().startswith("{") and ";" not in masked[i]:
+            scan_from = j + 1
+        else:
+            return i
+    for k in range(scan_from, min(len(masked), i + 4000)):
+        if after[k] <= base:
+            return k
+    return i
+
+
+def _ts_calls(masked: list[str], start: int, end: int) -> list[str]:
+    text = "\n".join(masked[start:min(end + 1, start + 400)])
+    names = re.findall(r"(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(", text) + re.findall(r"\.([A-Za-z_$][\w$]*)\s*\(", text)
+    return [n for n in dict.fromkeys(names) if len(n) >= 3 and n not in _TS_CALL_STOP][:12]
 
 
 def _ts_doc(lines: list[str], idx: int) -> str:
@@ -302,31 +442,47 @@ def _ts_doc(lines: list[str], idx: int) -> str:
 
 def _parse_ts(src: str) -> tuple[list[dict], list[str]]:
     lines = src.split("\n")
+    masked = _mask_ts(src).split("\n")
+    before, after, pbefore = _depths(masked)
     imports = sorted(set(_TS_IMPORT.findall(src)))
     syms: list[dict] = []
     classes: list[tuple[str, int, int]] = []
-    for i, line in enumerate(lines):
+    suites: list[tuple[str, int, int]] = []
+
+    def add(name: str, kind: str, i: int, end: int, sig: str) -> None:
+        syms.append(_sym(name, kind, i + 1, end + 1, sig, _ts_doc(lines, i), _ts_calls(masked, i, end)))
+
+    for i, line in enumerate(masked):
+        top = before[i] == 0 and pbefore[i] == 0
         m = _TS_DECL.match(line)
-        kind = name = None
         if m:
             kind, name = m.group("kind"), m.group("name")
-        elif (m := _TS_FUNC.match(line)):
-            kind, name = "function", m.group("name")
-        elif (m := _TS_ARROW.match(line)):
-            kind, name = "function", m.group("name")
-        if name and kind:
-            end = _brace_end(lines, i) if kind != "type" or "{" in line else i + 1
-            syms.append(_sym(name, kind, i + 1, end, line.strip().rstrip("{").strip(), _ts_doc(lines, i)))
+            end = _span_end(masked, before, after, i)
+            add(name, kind, i, end, lines[i].strip().rstrip("{").strip())
             if kind == "class":
-                classes.append((name, i + 1, end))
-    for i, line in enumerate(lines):
-        m = _TS_METHOD.match(line)
-        if not m or m.group("name") in _TS_NOT_METHOD:
+                classes.append((name, i, end))
             continue
-        owner = next((c for c in classes if c[1] < i + 1 <= c[2]), None)
-        if owner:
-            syms.append(_sym(f"{owner[0]}.{m.group('name')}", "method", i + 1, _brace_end(lines, i),
-                             line.strip().rstrip("{").strip(), _ts_doc(lines, i)))
+        if top and (m := (_TS_FUNC.match(line) or _TS_ARROW.match(line))):
+            add(m.group("name"), "function", i, _span_end(masked, before, after, i), lines[i].strip().rstrip("{").strip())
+            continue
+        if _TS_TEST.match(line) and (t := _TS_TEST_TITLE.match(lines[i])):
+            fn, title = _TS_TEST.match(line).group("fn"), t.group("title").strip()
+            end = _span_end(masked, before, after, i)
+            owner = next((s for s in reversed(suites) if s[1] < i <= s[2]), None)
+            is_suite = fn in ("describe", "suite") or ".describe" in line[:line.index("(")]  # test.describe(...)
+            name = f"{owner[0]} > {title}" if owner else title
+            add(name, "suite" if is_suite else "test", i, end, f"{fn}('{title}')")
+            if is_suite:
+                suites.append((name, i, end))
+    for cname, cs, ce in classes:
+        for idx in range(cs + 1, ce + 1):
+            if before[idx] != before[cs] + 1 or pbefore[idx] != pbefore[cs]:
+                continue  # only direct class members, never statements nested in method bodies
+            m = _TS_MEMBER.match(masked[idx]) or _TS_PROP_FN.match(masked[idx])
+            if not m or m.group("name") in _TS_KEYWORDS:
+                continue
+            add(f"{cname}.{m.group('name')}", "method", idx, _span_end(masked, before, after, idx),
+                lines[idx].strip().rstrip("{").strip())
     return syms, imports
 
 
@@ -585,13 +741,17 @@ def search(root: str, query: str, k: int = 5, recency: bool = True, max_per_file
         "symbols_fts.name AS name_text "
         "FROM symbols_fts JOIN symbols s ON s.id=symbols_fts.rowid "
         "WHERE symbols_fts MATCH ? ORDER BY score DESC LIMIT 60", (match,)).fetchall()
-    wants_tests = any(t.startswith("test") or t in ("spec", "pytest", "fixture") for t in terms)
-    wants_docs = any(t in _DOC_QUERY_TERMS for t in terms)
+    # Intent is judged on prose only: path-like/kebab tokens ("NexusAI-Test-Framework", "src/test/x") must not flip it.
+    intent_terms = set(tokenize(re.sub(r"\S*[/\\-]\S*", " ", query), drop_stop=True))
+    wants_tests = any(t.startswith("test") or t in ("spec", "pytest", "fixture") for t in intent_terms)
+    wants_docs = any(t in _DOC_QUERY_TERMS for t in intent_terms)
     gmult = _graph_multipliers(con, rows, wants_tests)
     mods = modified_files(root) if recency else set()
     ranked = []
+    name_hits: dict[int, int] = {}
     for r in rows:
-        score = r["score"] * (RECENCY_BOOST if r["path"] in mods else 1.0) * gmult.get(r["id"], 1.0)
+        name_hits[r["id"]] = _term_hits(terms, alias, set(tokenize(r["name_text"])))
+        score = r["score"] * (1.0 + NAME_MATCH_BOOST * name_hits[r["id"]]) * (RECENCY_BOOST if r["path"] in mods else 1.0) * gmult.get(r["id"], 1.0)
         if not wants_docs and r["kind"] == "section":
             score *= DOC_PENALTY
         if not wants_tests and _TEST_PATH_RE.search(r["path"]):
@@ -611,9 +771,9 @@ def search(root: str, query: str, k: int = 5, recency: bool = True, max_per_file
         per_file[r["path"]] = per_file.get(r["path"], 0) + 1
         hits.append({"path": r["path"], "name": r["name"], "kind": r["kind"], "start": r["start"], "end": r["end"],
                      "sig": r["sig"], "score": round(score, 4), "modified": r["path"] in mods,
-                     "matched": _term_hits(terms, alias, set(tokenize(r["name_text"]))),  # precision gate: NAME tokens only
+                     "matched": name_hits[r["id"]],  # precision gate: NAME tokens only
                      "matched_any": _term_hits(terms, alias, set(tokenize(r["strict_text"]))),  # name+signature+path
-                     "eligible": wants_tests or not _TEST_PATH_RE.search(r["path"]),
+                     "eligible": (wants_tests or not _TEST_PATH_RE.search(r["path"])) and (wants_docs or r["kind"] != "section"),
                      "_tokens": set(tokenize(r["fts_text"]))})
     top_tokens: set[str] = set()
     for h in hits[:3]:
@@ -761,7 +921,7 @@ def repo_map(root: str, token_budget: int = 800) -> str:
     files = con.execute("SELECT path, lang, tokens_raw FROM files").fetchall()
     top = {}
     for r in con.execute("SELECT path,name,kind,start,end FROM symbols WHERE kind IN "
-                         "('class','function','interface','enum','constant','type') ORDER BY path, start"):
+                         "('class','function','interface','enum','constant','type','suite') ORDER BY path, start"):
         top.setdefault(r["path"], []).append(r)
     con.close()
     order = sorted((f for f in files if f["lang"] != "markdown"), key=lambda f: (f["path"] not in mods, f["path"]))

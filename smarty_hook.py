@@ -59,9 +59,19 @@ def _gc(root: str) -> None:
         pass
 
 
+_WRAPPERS = re.compile(r"<(system-reminder|ide_[a-z_]+|command-[a-z-]+)>.*?</\1>", re.S)
+
+
+def clean_prompt(prompt: str) -> str:
+    """Drop harness-injected wrappers (worktree notices, IDE context, ...) so only what the user typed is searched."""
+    return _WRAPPERS.sub(" ", prompt).strip()
+
+
 def process(event: dict) -> dict | None:
     """Return the hook output dict, or None to stay silent."""
     prompt = event.get("prompt")
+    if isinstance(prompt, str):
+        prompt = clean_prompt(prompt)
     cwd = event.get("cwd") or os.getcwd()
     if not isinstance(prompt, str) or not prompt.strip() or prompt.lstrip().startswith("/"):
         return None
