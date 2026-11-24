@@ -181,6 +181,7 @@ def simulate(root: str, code: list[dict], silent: list[str], min_confidence: flo
 
 
 # ── real transcripts ──────────────────────────────────────────────────────────
+INSTRUCTIONS_MARKER = "nlp-smarty index:"  # start of mcp_server.INSTRUCTIONS; present when the agent received them
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 EXPLORE_TOOLS = {"Read", "Grep", "Glob", "LS"}
 _BASH_EXPLORE = re.compile(r"(^|[\s;&|])(grep|rg|find|ls|cat|head|tail|tree|wc|git\s+(grep|ls-files)|sed\s+-n)\b")
@@ -206,6 +207,7 @@ def analyze_transcript(path: str) -> dict[str, Any]:
     seen_tool: set[str] = set()
     results: dict[str, int] = {}         # tool_use_id -> estimated result tokens
     hooks = hook_tokens = 0
+    instr_seen = 0
     ts: list[str] = []
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -234,6 +236,8 @@ def analyze_transcript(path: str) -> dict[str, Any]:
                 if a.get("type") == "hook_additional_context" and "retrieved_context" in str(a.get("content", "")):
                     hooks += 1
                     hook_tokens += ri.est_tokens(str(a.get("content", "")))
+                elif INSTRUCTIONS_MARKER in json.dumps(a):
+                    instr_seen = 1
     inp = sum(u.get("input_tokens", 0) for u in usage.values())
     cw = sum(u.get("cache_creation_input_tokens", 0) for u in usage.values())
     cr = sum(u.get("cache_read_input_tokens", 0) for u in usage.values())
@@ -251,7 +255,9 @@ def analyze_transcript(path: str) -> dict[str, Any]:
         "explore_result_tokens_before_first_edit": sum(results.get(u["id"], 0) for u in pre),
         "had_edit": first_edit < len(uses),
         "smarty_tool_calls": sum("smarty" in u["name"].lower() for u in uses),
+        "smarty_tools_used": sorted({u["name"].split("__")[-1] for u in uses if "smarty" in u["name"].lower()}),
         "hook_injections": hooks, "hook_injection_tokens": hook_tokens,
+        "smarty_instructions_seen": instr_seen,
         "wall_seconds": _span(ts),
     }
 
@@ -349,23 +355,43 @@ class InputError(Exception):
     pass
 
 
-def expand_inputs(paths: list[str], last: int | None = None) -> list[str]:
+PROJECTS_DIR = "~/.claude/projects"
+
+
+def match_project_dirs(match: str, root: str | None = None) -> list[str]:
+    """Claude Code project directories whose name contains `match` (avoids shell-glob 'no matches found' errors)."""
+    root = os.path.expanduser(root or PROJECTS_DIR)
+    if not os.path.isdir(root):
+        raise InputError(f"Claude Code projects directory not found: {root}")
+    found = sorted(os.path.join(root, d) for d in os.listdir(root) if match in d and os.path.isdir(os.path.join(root, d)))
+    if not found:
+        raise InputError(f"no Claude Code project directory matching '{match}' under {root} yet "
+                         f"(a directory only appears once a session has run in that folder)")
+    return found
+
+
+def expand_inputs(paths: list[str], last: int | None = None, match: str | None = None) -> list[str]:
     """Files are used as given. Directories expand to their *.jsonl sessions; with `last`, only the newest N sessions
     across ALL given directories are kept (so several worktree project dirs can be passed with one --last)."""
     files: list[str] = []
     from_dirs: list[str] = []
+    seen_dirs: list[str] = []
+    if match:
+        paths = list(paths) + match_project_dirs(match)
+    if not paths:
+        raise InputError("give transcript paths/directories or --match NAME")
     for p in paths:
         p = os.path.expanduser(p)
         if os.path.isdir(p):
-            found = [os.path.join(p, f) for f in os.listdir(p) if f.endswith(".jsonl")]
-            if not found:
-                raise InputError(f"no .jsonl transcripts in {p} (has a session been run there yet?)")
-            from_dirs.extend(found)
+            from_dirs.extend(os.path.join(p, f) for f in os.listdir(p) if f.endswith(".jsonl"))
+            seen_dirs.append(p)
         elif os.path.isfile(p):
             files.append(p)
         else:
             raise InputError(f"not found: {p}  (substitute your real transcript paths or a project directory under "
                              f"~/.claude/projects/; 'A1.jsonl'-style names in the docs are placeholders)")
+    if seen_dirs and not from_dirs and not files:  # empty dirs are fine inside a glob; nothing anywhere is an error
+        raise InputError(f"no .jsonl transcripts in {', '.join(seen_dirs)} (has a session been run there yet?)")
     from_dirs.sort(key=os.path.getmtime, reverse=True)
     return files + (from_dirs[:last] if last else from_dirs)
 
@@ -383,7 +409,14 @@ def _span(ts: list[str]) -> float:
 METRICS = ["weighted_input_equiv", "input_tokens", "cache_write_tokens", "cache_read_tokens", "output_tokens",
            "api_calls", "tool_calls_before_first_edit", "explore_calls_before_first_edit",
            "explore_result_tokens_before_first_edit", "smarty_tool_calls", "hook_injections", "hook_injection_tokens",
-           "wall_seconds"]
+           "smarty_instructions_seen", "wall_seconds"]
+
+
+def guess_arm(a: dict) -> str:
+    """A = no smarty activity; B = hook (and/or tools) but no instructions; C = the agent received the MCP instructions."""
+    if a["smarty_instructions_seen"]:
+        return "C"
+    return "B" if (a["hook_injections"] or a["smarty_tool_calls"]) else "A"
 
 
 def compare(a: list[dict], b: list[dict]) -> list[dict]:
@@ -419,14 +452,44 @@ def main(argv: list[str] | None = None) -> int:
                    help="baseline agent model(s): grep+path also globs file names (fairer, default); grep is the strawman")
     s.add_argument("--bpe", action="store_true", help="use the BPE-calibrated estimator instead of the light heuristic")
     s.add_argument("--json", dest="json_out")
+    i = sub.add_parser("inspect", help="one line per session: inferred arm, hook/instructions/tool use, cost (validity check)")
+    i.add_argument("paths", nargs="*", help=".jsonl files and/or project directories")
+    i.add_argument("--match", help="select project directories by name substring, e.g. NexusAI-smarty-c (no shell glob needed)")
+    i.add_argument("--last", type=int, help="newest N sessions across the given directories")
     t = sub.add_parser("transcripts", help="compare real Claude Code sessions: A (baseline) vs B (smarty)")
-    t.add_argument("--a", nargs="+", required=True, help="baseline transcripts: .jsonl files and/or project directories")
-    t.add_argument("--b", nargs="+", required=True, help="smarty transcripts: .jsonl files and/or project directories")
+    t.add_argument("--smarty-vs-smarty", action="store_true",
+                   help="reference arm (--a) is hook-only smarty and --b is hook + MCP instructions; adjusts the validity checks")
+    t.add_argument("--a", nargs="*", default=[], help="baseline transcripts: .jsonl files and/or project directories")
+    t.add_argument("--b", nargs="*", default=[], help="smarty transcripts: .jsonl files and/or project directories")
+    t.add_argument("--by-arm", nargs=2, metavar=("REF", "CAND"), choices=("A", "B", "C"),
+                   help="gather sessions via --match/--a/--b paths, group them by the arm each one ACTUALLY was (A none / B hook "
+                        "only / C hook+instructions, inferred from content) and compare REF vs CAND. Needed because Claude "
+                        "Code names project dirs after the repo root, so folder names cannot identify an arm.")
+    t.add_argument("--match", help="with --by-arm: select project directories by name substring")
+    t.add_argument("--a-match", help="select arm-A project directories by name substring")
+    t.add_argument("--b-match", help="select arm-B project directories by name substring")
     t.add_argument("--per-prompt", action="store_true",
                    help="split each session at its user prompts and compare task by task (use when a session ran several tasks)")
     t.add_argument("--last", type=int, help="when a directory is given, use only its newest N sessions")
     t.add_argument("--json", dest="json_out")
     a = ap.parse_args(argv)
+    if a.cmd == "inspect":
+        try:
+            paths = expand_inputs(a.paths, a.last, a.match)
+        except InputError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"{'modified':12}{'arm':4}{'hook':>5}{'instr':>6}{'mcp':>5}{'explore':>8}{'api':>5}{'wIn':>9} {'edit':5} prompt / smarty tools used")
+        for p in sorted(paths, key=os.path.getmtime):
+            x = analyze_transcript(p)
+            seg = analyze_segments(p)
+            when = __import__("time").strftime("%m-%d %H:%M", __import__("time").localtime(os.path.getmtime(p)))
+            prompt = (seg[0]["prompt"] if seg else "")[:46].replace("\n", " ")
+            tools = ",".join(x["smarty_tools_used"]) or "-"
+            print(f"{when:12}{guess_arm(x):4}{x['hook_injections']:>5}{x['smarty_instructions_seen']:>6}{x['smarty_tool_calls']:>5}"
+                  f"{x['explore_calls_before_first_edit']:>8}{x['api_calls']:>5}{x['weighted_input_equiv']:>9} "
+                  f"{'yes' if x['had_edit'] else 'no':5} {prompt!r} [{tools}]" + (f"  (+{len(seg)-1} more prompts)" if len(seg) > 1 else ""))
+        return 0
     if a.cmd == "simulate":
         if a.bpe:
             ri._ESTIMATOR = None
@@ -443,7 +506,19 @@ def main(argv: list[str] | None = None) -> int:
             json.dump(out, open(a.json_out, "w"), indent=2)
         return 0
     try:
-        pa, pb = expand_inputs(a.a, a.last), expand_inputs(a.b, a.last)
+        if a.by_arm:
+            allp = expand_inputs(a.a + a.b, a.last, a.match)
+            arms = {p: guess_arm(analyze_transcript(p)) for p in allp}
+            pa = [p for p in allp if arms[p] == a.by_arm[0]]
+            pb = [p for p in allp if arms[p] == a.by_arm[1]]
+            counts = {k: sum(1 for v in arms.values() if v == k) for k in "ABC"}
+            print(f"sessions by inferred arm: A={counts['A']} B={counts['B']} C={counts['C']}  (comparing {a.by_arm[0]} vs {a.by_arm[1]})")
+            if not pa or not pb:
+                raise InputError(f"need sessions in both arms; found {a.by_arm[0]}={len(pa)}, {a.by_arm[1]}={len(pb)}")
+            if set(a.by_arm) == {"B", "C"}:
+                a.smarty_vs_smarty = True
+        else:
+            pa, pb = expand_inputs(a.a, a.last, a.a_match), expand_inputs(a.b, a.last, a.b_match)
     except InputError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -458,10 +533,22 @@ def main(argv: list[str] | None = None) -> int:
         print("\n--- whole-session totals (all tasks together) ---")
     rows = compare(ga, gb)
     print(f"A (baseline) n={len(ga)}   B (smarty) n={len(gb)}")
-    if any(x["hook_injections"] or x["smarty_tool_calls"] for x in ga):
-        print("WARNING: arm A shows smarty activity - the baseline is contaminated; this comparison is invalid.")
-    if not any(x["hook_injections"] or x["smarty_tool_calls"] for x in gb):
-        print("WARNING: arm B shows NO smarty activity (0 hook injections, 0 smarty tool calls) - smarty may not have loaded.")
+    if a.smarty_vs_smarty:
+        if any(not x["hook_injections"] for x in ga + gb):
+            print("WARNING: some runs had no hook injection; both arms are supposed to use the hook.")
+        if any(x["smarty_instructions_seen"] for x in ga):
+            print("WARNING: reference arm (--a) received the MCP instructions - it is not hook-only; comparison invalid.")
+        if not all(x["smarty_instructions_seen"] for x in gb):
+            print("WARNING: not every --b run received the MCP instructions (smarty_instructions_seen); check the server is "
+                  "current and SMARTY_MCP_INSTRUCTIONS is not 'off' in that folder.")
+        used = sum(1 for x in gb if x["smarty_tool_calls"])
+        print(f"MCP tools were called in {used}/{len(gb)} instruction-arm runs "
+              f"(and {sum(1 for x in ga if x['smarty_tool_calls'])}/{len(ga)} in the reference arm).")
+    else:
+        if any(x["hook_injections"] or x["smarty_tool_calls"] for x in ga):
+            print("WARNING: arm A shows smarty activity - the baseline is contaminated; this comparison is invalid.")
+        if not any(x["hook_injections"] or x["smarty_tool_calls"] for x in gb):
+            print("WARNING: arm B shows NO smarty activity (0 hook injections, 0 smarty tool calls) - smarty may not have loaded.")
     print(f"{'metric':44}{'A':>12}{'B':>12}{'B vs A':>10}")
     for r in rows:
         print(f"{r['metric']:44}{r['A']:>12}{r['B']:>12}{(str(r['delta_pct']) + '%') if r['delta_pct'] is not None else '-':>10}")

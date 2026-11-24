@@ -441,6 +441,29 @@ python smarty_cli.py uninstall [--purge]     # remove only what init added
 
 - Hooks go to `.claude/settings.local.json` (machine-specific, git-excluded); use `--scope project` to share them.
 - `init` is idempotent, merges into existing JSON (aborts on unparseable files), and keeps one-time backups in `.smarty/backups/`.
-- MCP tools: `smarty_get_context`, `smarty_find_symbol`, `smarty_repo_map`, `smarty_get_slice` (+ the original optimizer tools).
+- MCP tools: `smarty_get_context`, `smarty_find_symbol`, `smarty_find_references` (definitions, callers and ranked, token-budgeted usages), `smarty_repo_map`, `smarty_get_slice` (+ the original optimizer tools). The server's agent-facing instructions are **off by default** (a live test showed the agent never used the tools even with them); opt in with `SMARTY_MCP_INSTRUCTIONS=on` in the `env` of `.mcp.json`.
 - Measure retrieval quality: `python eval_retrieval.py --golden` (hand-labelled queries) or without flags (git history).
 - `pip install .` provides `smarty`, `smarty-mcp` and `smarty-hook` commands.
+
+## Gateway: deterministic pre-ingestion proxy (`smarty serve`)
+
+An OpenAI-compatible proxy for any SDK or pipeline (HuggingFace router, Copilot-style gateways, LangChain, ...):
+
+```bash
+python smarty_cli.py serve --upstream https://api.openai.com --profile strict   # then base_url=http://127.0.0.1:8787/v1
+python smarty_cli.py stats [--prices prices.json] [--since 24h]                  # measured savings ledger
+python smarty_cli.py bench traffic.jsonl                                         # offline replay of recorded requests
+```
+
+- **Profiles:** `strict` (default: prose of user messages and tool-schema descriptions only), `balanced` (+ hedging words,
+  causal duplicate collapse), `aggressive` (+ articles in long prose). All three keep protected spans verbatim.
+- **Guarantees (each has tests):** code, URLs, identifiers, paths, quoted strings, JSON, numbers and negation clauses are
+  never altered and are re-verified after compression, falling back to the original text; transforms are deterministic and
+  causal so provider prompt-cache prefixes stay stable; tool schemas keep their exact JSON structure; fail-open on any
+  error; credentials are forwarded untouched and never stored; binds to loopback unless `--allow-remote`; streaming is
+  relayed as it arrives; SIGTERM waits for in-flight requests so no ledger row is lost.
+- **Ledger (`~/.smarty/ledger.db`):** counts only, never content. Savings are original vs forwarded request size with the
+  same estimator, calibrated against the provider's exact `usage`; USD uses a price table you supply.
+- **Measure before you claim:** on RAG requests built from real documents the strict profile saved about 1% (prose
+  compression has little to remove from well-written text). Larger wins need structural reductions (pruning, duplicates,
+  bulky tool schemas): run `serve --record traffic.jsonl` and `bench` on your own traffic to see what applies.
