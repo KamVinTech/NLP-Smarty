@@ -6,7 +6,8 @@ from typing import Any
 class TokenBudget:
     """
     Step 1: Token-Aware Budgeting contract.
-    Controls the maximum token ceiling for each compiled prompt section.
+    Per-section token budgets. NOTE: max_total_tokens is advisory; it is not
+    enforced as a total ceiling on the compiled payload.
     """
     max_total_tokens: int = 512
     core_query_budget: int = 120

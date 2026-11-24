@@ -165,32 +165,57 @@ class StreamState:
         return "".join(self.text), (_anthropic_usage(self.usage) if self.kind == "anthropic" else _openai_usage(self.usage))
 
 
+class BadRequest(Exception):
+    pass
+
+
 def _read_request_body(handler: BaseHTTPRequestHandler, limit: int) -> bytes | None:
+    """Body bytes, None if over `limit`; raises BadRequest on malformed framing."""
     te = (handler.headers.get("Transfer-Encoding") or "").lower()
+    if te and handler.headers.get("Content-Length") is not None:
+        raise BadRequest("both Transfer-Encoding and Content-Length")  # request-smuggling shape
     if "chunked" in te:
         data = b""
         while True:
-            size = int(handler.rfile.readline().split(b";")[0].strip() or b"0", 16)
+            line = handler.rfile.readline(1024)
+            try:
+                size = int(line.split(b";")[0].strip(), 16)
+            except ValueError:
+                raise BadRequest("bad chunk size") from None
+            if size < 0:
+                raise BadRequest("bad chunk size")
             if size == 0:
-                handler.rfile.readline()
+                handler.rfile.readline(1024)
                 return data
+            if len(data) + size > limit:
+                return None  # checked BEFORE reading the chunk
             data += handler.rfile.read(size)
-            handler.rfile.readline()
-            if len(data) > limit:
-                return None
-    n = int(handler.headers.get("Content-Length") or 0)
+            handler.rfile.readline(1024)
+    raw = (handler.headers.get("Content-Length") or "0").strip()
+    if not raw.isdigit():
+        raise BadRequest("bad Content-Length")
+    n = int(raw)
     if n > limit:
         return None
     return handler.rfile.read(n) if n else b""
 
 
+def _valid_target(path: str) -> bool:
+    """Origin-form only (no absolute URL / authority), no CR/LF/NUL, no dot-segments (also percent-encoded)."""
+    if not path.startswith("/") or path.startswith("//") or any(c in path for c in "\r\n\0\\"):
+        return False
+    p = urllib.parse.unquote(urllib.parse.urlsplit(path).path)
+    return ".." not in p.split("/") and "\\" not in p and "\0" not in p
+
+
 def make_server(host: str, port: int, cfg: Config) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
         server_version = f"nlp-smarty-gateway/{__version__}"
+        timeout = 60  # client socket read timeout: a stalled/slow-loris client cannot pin a thread forever
 
         def log_message(self, fmt: str, *args: Any) -> None:  # request lines only, never bodies or headers
             if cfg.verbose:
-                sys.stderr.write("[gateway] " + (fmt % args) + "\n")
+                sys.stderr.write("[gateway] " + (fmt % args).replace("\r", "?").replace("\n", "?")[:300] + "\n")
 
         # every verb goes through the same relay
         def do_GET(self) -> None: self._handle()
@@ -210,8 +235,16 @@ def make_server(host: str, port: int, cfg: Config) -> ThreadingHTTPServer:
 
         def _handle(self) -> None:
             t_req = time.perf_counter()
-            raw = _read_request_body(self, cfg.max_body) if self.command in ("POST", "PUT", "PATCH") else b""
+            if not _valid_target(self.path):
+                self.close_connection = True
+                return self._send_error_json(400, "invalid request target", "contextgate_bad_request")
+            try:
+                raw = _read_request_body(self, cfg.max_body) if self.command in ("POST", "PUT", "PATCH") else b""
+            except (BadRequest, OSError):
+                self.close_connection = True
+                return self._send_error_json(400, "malformed request framing", "contextgate_bad_request")
             if raw is None:
+                self.close_connection = True
                 return self._send_error_json(413, "request body too large", "contextgate_request_too_large")
             path = self.path
             kind = route_kind(self.command, path)
@@ -221,7 +254,7 @@ def make_server(host: str, port: int, cfg: Config) -> ThreadingHTTPServer:
                 try:
                     parsed = json.loads(raw.decode("utf-8"))
                     original = parsed if isinstance(parsed, dict) else None
-                except (ValueError, UnicodeDecodeError):
+                except (ValueError, UnicodeDecodeError, RecursionError):
                     original = None
                 if original is not None:
                     try:
@@ -241,6 +274,10 @@ def make_server(host: str, port: int, cfg: Config) -> ThreadingHTTPServer:
 
         def _record(self, body: dict) -> None:
             fd = os.open(cfg.record_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                os.fchmod(fd, 0o600)  # tighten a pre-existing, looser file too
+            except (AttributeError, OSError):
+                pass
             with os.fdopen(fd, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"ts": time.time(), "body": body}, ensure_ascii=False) + "\n")
 
@@ -340,6 +377,8 @@ def make_server(host: str, port: int, cfg: Config) -> ThreadingHTTPServer:
 
 
 def serve(host: str, port: int, cfg: Config) -> None:
+    if cfg.scheme == "http" and cfg.host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"warning: upstream {cfg.upstream} is plain http on a non-loopback host; API keys travel unencrypted", file=sys.stderr)
     srv = make_server(host, port, cfg)
     print(f"gateway listening on http://{host}:{srv.server_address[1]}  ->  {cfg.upstream}  (profile: {cfg.profile}, "
           f"ledger: {cfg.ledger.path if cfg.ledger else 'off'})", file=sys.stderr)

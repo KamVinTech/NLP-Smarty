@@ -1,125 +1,188 @@
-# ContextGate — Deterministic Prompt Optimization Pipeline + VS Code Extension
+# ContextGate
 
-> **Naming note:** the product and the VS Code extension are called **ContextGate**. The GitHub repository is still `NLP-Smarty`, and the
-> command-line tool (`smarty`), the Python modules and the `SMARTY_*` environment variables keep their current names until the
-> Python package is renamed.
+**A deterministic, zero-LLM gate in front of your LLM calls.** It compresses prose safely, checks that required inputs are present, grounds the prompt in a strict XML structure, audits the response, and records what it saved in a local ledger. Every transform is classical NLP/IR (regex, BM25, TF-IDF, MMR, SimHash); no model, no network call and no `tiktoken` is used inside the engine.
 
-A production-grade, **zero-LLM** middleware layer that intercepts raw user input, cleans and compresses it, extracts intent and entities using classical NLP, and compiles a strictly structured, anti-hallucination prompt for a downstream AI Agent — now with a full **VS Code extension** for side-by-side Raw vs. Optimized LLM evaluation.
+> **Naming:** the product and the VS Code extension are **ContextGate**. The GitHub repository is still `NLP-Smarty`; the command-line tool (`smarty`), the Python modules and the `SMARTY_*` environment variables keep their current names until the Python package is renamed.
 
----
+## Contents
 
-## How It Works
-
-```
-Raw User Input
-      │
-      ▼
-┌──────────────────────────────────────────┐
-│  Step 1: Token-Aware Budgeting           │  BPE-calibrated estimator, per-section budget
-│  Step 8: Adaptive Intensity Selection    │  AUTO | LIGHT | MEDIUM | AGGRESSIVE scaling
-│  Step 5: Lexical Normalization           │  NFKC, contraction expansion, verbose-idiom replacement
-│  Step 4: Extractive Compression          │  Composite BM25 + TF-IDF Centroid + U-Positional Salience
-└────────────────────┬─────────────────────┘
-                     │
-                     ▼
-┌──────────────────────────────────────────┐
-│  Stage 2: Weighted Intent Router         │  Weighted regex + spaCy POS/dependency parse
-│  → TaskIntent + confidence               │  Secondary intent detection, task_hint override
-│  → Entities + Negation Spans             │  Early short-circuit if required slots missing
-└────────────────────┬─────────────────────┘
-                     │
-                     ▼
-┌──────────────────────────────────────────┐
-│  Step 6: Deterministic Prompt Cache      │  SHA-256 canonical + 64-bit SimHash LSH near-duplicate
-│  → Cache Hit → return immediately        │
-└────────────────────┬─────────────────────┘
-                     │
-                     ▼
-┌──────────────────────────────────────────┐
-│  Step 2: Tool Schema Compression         │  JSON Schema → compact typed signature compiler
-│  Step 3: MMR + BM25 + TF-IDF Pruner     │  Few-shots, tools, external context, history
-│  Step 7: Conversation History Pruning    │  Recency-weighted MMR turn compaction
-└────────────────────┬─────────────────────┘
-                     │
-                     ▼
-┌──────────────────────────────────────────┐
-│  Stage 4: Structural Compiler            │  Fills structured XML template
-│  Step 9: Full Payload Telemetry          │  Before/after token counts for query + full payload
-│  → CompiledPrompt payload                │  Injects guardrails + output format constraints
-└──────────────────────────────────────────┘
-                     │
-                     ▼
-┌──────────────────────────────────────────┐
-│  bridge_server.py  (JSON-Lines sidecar)  │  Persistent stdin/stdout process, 4 commands
-└────────────────────┬─────────────────────┘
-                     │
-          ┌──────────┴──────────┐
-          ▼                     ▼
-   vscode.lm (Copilot)    app.py (HuggingFace)
-   Raw + Optimized A/B    InferenceClient / HTTP
-   via extension.ts       offline simulator fallback
-```
+1. [What it is, and what it is not](#what-it-is-and-what-it-is-not)
+2. [Architecture](#architecture)
+3. [Quickstart](#quickstart)
+4. [Surface 1: gateway proxy](#surface-1-gateway-proxy-smarty-serve)
+5. [Surface 2: repo intelligence for coding agents](#surface-2-repo-intelligence-for-coding-agents-smarty-init)
+6. [Surface 3: VS Code extension](#surface-3-vs-code-extension)
+7. [The optimizer pipeline](#the-optimizer-pipeline-pipelinepy)
+8. [Measured results](#measured-results-what-we-can-and-cannot-claim)
+9. [Safety guarantees](#safety-guarantees)
+10. [Project layout](#project-layout) · [Dependencies](#dependencies) · [Tests](#tests) · [Extending](#extending-the-registry) · [Releasing](#releasing)
 
 ---
 
-## Project Structure
+## What it is, and what it is not
+
+| It is | It is not |
+|---|---|
+| A deterministic pre-ingestion gate: same input, same output, no model in the loop | A way to cut an agent session's bill by large amounts on its own |
+| Safe-by-default compression with verification and fail-open fallback | A tokenizer: token counts are **estimates** (median ~12% over `cl100k_base`) |
+| A local, counts-only ledger that measures savings on **your** traffic | A guarantee of savings: on well-written text the strict profile saves about 1% |
+
+Where the money is: in measured Claude Code sessions the fixed prefix (system prompt, tool definitions) was about 82% of weighted cost, appended context 7.6%, output 10.5% and the typed prompt 0.1%. Prompt-text compression can only touch the small remainder; avoiding whole API calls and shrinking bulky structure matter more. See [Measured results](#measured-results-what-we-can-and-cannot-claim).
+
+---
+
+## Architecture
+
+One engine, three surfaces:
 
 ```
-NLP-Smarty/
-├── .vscode/
-│   ├── launch.json      # Enables pressing F5 to launch the Extension Host
-│   └── tasks.json       # Runs `npm run compile` automatically before F5
-├── src/
-│   └── extension.ts     # VS Code extension (ContextGate) — commands + @contextgate chat participant
-├── out/                 # Compiled JS output (generated by tsc, git-ignored)
-├── pipeline.py          # Core 9-step deterministic engine
-├── data_contracts.py    # Typed dataclasses: RawRequest, CompiledPrompt, OptimizationTrace, TokenBudget
-├── registry.py          # Static tools (verbose JSON Schema), few-shot examples, guardrails, required slots
-├── app.py               # HuggingFace downstream agent — Raw vs. Optimized A/B comparison + audit
-├── bridge_server.py     # Persistent JSON-Lines sidecar (optimize / compare_hf / audit_pair / clear_cache)
-├── test_harness.py      # Benchmarking harness — Part A (5 baseline) + Part B (7 regression tests)
-├── package.json         # VS Code extension manifest (v0.4.0)
-├── tsconfig.json        # TypeScript compiler config (ES2022, strict, @types/node)
-├── .vscodeignore        # Excludes venv/node_modules/src from the .vsix bundle
-├── .gitignore
-└── README.md
+                         ┌───────────────────────────────────────────────┐
+   OpenAI / Anthropic    │  gateway.py  (stdlib ThreadingHTTPServer)     │
+   SDKs, Claude Code ───►│  route · parse · relay (SSE incremental)      │──► upstream API
+   (base URL → :8787)    │        │                       │              │    (credentials forwarded
+                         │        ▼                       ▼              │     untouched, never stored)
+                         │  gate.py                  ledger.py           │
+                         │  protected spans →        SQLite, counts only │
+                         │  compress → verify →      est. vs provider    │
+                         │  fall back to original    usage calibration   │
+                         └───────────────────────────────────────────────┘
+
+   Claude Code ─ UserPromptSubmit hook ─► smarty_hook.py ─┐
+   Claude Code ─ MCP (optional) ────────► mcp_server.py ──┼─► repo_indexer.py  (symbols + line spans,
+                                                          │        hash-checked, stdlib only)
+   VS Code ── extension.ts ─ JSON-Lines ─► bridge_server.py ─► pipeline.py (9-step optimizer)
+                                                  │                 ├─ data_contracts.py (typed contracts)
+                                                  │                 └─ registry.py (tools, few-shots, guardrails, slots)
+                                                  └─► app.py (optional downstream HF consumer / offline simulator)
 ```
+
+| Component | File | Responsibility |
+|---|---|---|
+| Gate | `gate.py` | Protected-span detection, deterministic prose compression (`strict`/`balanced`/`aggressive`), verification with fallback, OpenAI and Anthropic request walkers |
+| Gateway | `gateway.py` | Local proxy: request validation, gating, streaming relay, response audit, ledger rows |
+| Ledger | `ledger.py` | Counts-only SQLite ledger; estimator calibration against provider `usage`; `stats` report |
+| Offline bench | `gate_bench.py` | Replays recorded requests through the gate and reports per-profile, per-transform savings |
+| Optimizer | `pipeline.py` | 9-step prompt compiler (budgeting, schema compression, MMR/BM25 pruning, intent routing, cache, history pruning), post-LLM `audit_agent_response()` |
+| Contracts | `data_contracts.py`, `registry.py`, `protocol.py` | Typed dataclasses; static tools, few-shots, guardrails, required slots; protocol and version constants |
+| Repo intelligence | `repo_indexer.py`, `smarty_hook.py`, `mcp_server.py`, `smarty_cli.py` | Symbol index, Claude Code hook, MCP server, and the `smarty` CLI (`init`, `doctor`, `uninstall`, `audit`, `serve`, `stats`, `bench`) |
+| VS Code | `src/extension.ts`, `bridge_server.py` | Extension client plus persistent JSON-Lines engine sidecar |
+| Measurement | `token_audit.py`, `ab_compare.py`, `eval_retrieval.py` | Session cost audit, A/B tooling, retrieval-quality evaluation |
+| Downstream demo | `app.py` | HuggingFace consumer with offline simulator, used by the extension's compare view |
+
+**Hard rules.** No LLM or network calls and no `tiktoken` in `pipeline.py`, `data_contracts.py` or `registry.py`. The default install has **zero runtime dependencies**; `spacy`, `rank_bm25`, `flashtext` and `scikit-learn` are optional, each with a pure-Python fallback.
 
 ---
 
 ## Quickstart
 
-### 1. Python pipeline
+Python ≥ 3.9. No dependencies are needed for the gateway, hook, MCP server or CLI.
 
 ```bash
-python3 -m venv NLP-start
-source NLP-start/bin/activate   # Windows: NLP-start\Scripts\activate
-pip install spacy rank_bm25 flashtext scikit-learn
-python -m spacy download en_core_web_sm
-python test_harness.py
+git clone https://github.com/KamVinTech/NLP-Smarty && cd NLP-Smarty
+python3 smarty_cli.py --help
+python3 test_harness.py | tail -n 30      # optimizer benchmark + regression suite
+python3 -m pytest -q --tb=short tests     # unit and adversarial tests
 ```
 
-> All Python dependencies have graceful pure-Python fallbacks — the pipeline runs even without `spacy`, `flashtext`, or `rank_bm25`.
-
-### 2. VS Code extension
-
-```bash
-npm install
-npm run compile        # tsc -p ./
-# Press F5 in VS Code to launch Extension Development Host
-```
-
-### 3. HuggingFace live mode (optional)
-
-```bash
-export HF_TOKEN=hf_...          # your HuggingFace API token
-export HF_MODEL_ID=Qwen/Qwen2.5-Coder-32B-Instruct   # default model
-python app.py                   # runs a sample A/B comparison
-```
+Optional extras for the full optimizer: `pip install spacy rank_bm25 flashtext scikit-learn && python -m spacy download en_core_web_sm`.
+`pip install .` provides the commands `smarty`, `smarty-mcp`, `smarty-hook` and `smarty-gateway`.
 
 ---
 
-## Usage — Python API
+## Surface 1: gateway proxy (`smarty serve`)
+
+An OpenAI- and Anthropic-compatible local proxy for any SDK or pipeline.
+
+```bash
+python3 smarty_cli.py serve --upstream https://api.openai.com --profile strict   # base_url=http://127.0.0.1:8787/v1
+python3 smarty_cli.py serve --upstream https://api.anthropic.com                 # ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+python3 smarty_cli.py stats [--prices prices.json] [--since 24h]                 # measured savings ledger
+python3 smarty_cli.py bench traffic.jsonl                                        # offline replay of recorded requests
+```
+
+Options (`python3 gateway.py -h`): `--host` (default `127.0.0.1`), `--port` (`8787`), `--profile`, `--ledger PATH` / `--no-ledger`, `--record FILE`, `--force-usage` (OpenAI streaming only), `--no-audit`, `--timeout`, `--verbose`, `--allow-remote`.
+
+**Profiles**
+
+| Profile | Does |
+|---|---|
+| `strict` (default) | Prose of user messages and tool-schema `description` strings only |
+| `balanced` | + hedging words and causal duplicate collapse |
+| `aggressive` | + articles in long prose |
+
+**What is rewritten, per API**
+
+- OpenAI: user message text and tool-schema descriptions. Tool schemas keep their exact JSON structure.
+- Anthropic `/v1/messages`: only the user's plain-text blocks (not `<system-reminder>` wrappers) and tool/`input_schema` descriptions. `system`, signed `thinking`, `tool_use`, `tool_result` (strict) and `cache_control` are forwarded verbatim. Usage is normalised as fresh + cache read + cache write. `count_tokens` and batches are relayed ungated.
+- Verified by tests against the documented formats and block shapes seen in real request recordings; **not yet verified against live Claude Code traffic**. Per the [Claude Code gateway docs](https://code.claude.com/docs/en/llm-gateway-connect), a base URL alone does not replace a subscription login, and the desktop app ignores `ANTHROPIC_BASE_URL`/`settings.json`; use the CLI or the VS Code extension setting.
+
+**Ledger** (`~/.smarty/ledger.db`): counts only, never prompt text, responses, headers or credentials. Savings are original vs forwarded request size with the same estimator, calibrated against the provider's exact `usage`; USD uses a price table you supply. The row is written after the response is sent, so it adds no latency.
+
+**Hardening (each has a test in `tests/test_security.py`)**: loopback bind unless `--allow-remote`; origin-form request targets only (no `..`, encoded dot-segments, CR/LF, NUL, backslash); validated `Content-Length` and chunk sizes (size limit checked before reading); `Transfer-Encoding` + `Content-Length` together rejected; 60 s client socket timeout; deeply nested JSON forwarded verbatim; bounded gate work (pathological input skips compression and forwards the original); `--record` file forced to mode 0600; log lines sanitised; warning for plain-http non-loopback upstreams; SIGTERM drains in-flight requests so no ledger row is lost.
+
+**Measure before you claim.** Run `serve --record traffic.jsonl`, then `bench traffic.jsonl` on your own traffic to see which transforms apply. `--record` stores original prompts: keep the file private.
+
+---
+
+## Surface 2: repo intelligence for coding agents (`smarty init`)
+
+Zero-LLM, stdlib-only. Indexes your repo (symbols with line spans, hash-checked so spans never go stale) and delivers a small, budgeted `<retrieved_context>` capsule to the agent through a Claude Code `UserPromptSubmit` hook and an optional MCP server.
+
+```bash
+python3 smarty_cli.py init --dry-run          # preview every change as a diff
+python3 smarty_cli.py init --agents-md        # hooks + MCP + index (+ static CLAUDE.md/AGENTS.md block)
+python3 smarty_cli.py doctor                  # verify end to end
+python3 smarty_cli.py uninstall [--purge]     # remove only what init added
+python3 smarty_cli.py audit --last 10         # where do your sessions' tokens go? (reads Claude Code transcripts)
+```
+
+- Hooks go to `.claude/settings.local.json` (machine-specific, git-excluded); `--scope project` shares them. `init` is idempotent, merges into existing JSON (aborts on unparseable files) and keeps one-time backups in `.smarty/backups/`.
+- The hook is fail-open (always exits 0), stdlib-only, never injects the same symbol twice in a session, and stays silent below a confidence gate.
+- MCP tools: `smarty_get_context`, `smarty_find_symbol`, `smarty_find_references`, `smarty_repo_map`, `smarty_get_slice`, plus the optimizer tools (`smarty_optimize`, `smarty_audit_response`, `smarty_compress_context`, `smarty_compress_tool_schema`). The server's agent-facing instructions are **off by default** (in a live test the agent never used the tools even with them); opt in with `SMARTY_MCP_INSTRUCTIONS=on` in the `env` of `.mcp.json`.
+- Retrieval quality: `python3 eval_retrieval.py --golden` (hand-labelled queries) or without flags (git history). Cost audit: `smarty audit` (`token_audit.py`, weights `--w-cw/--w-cr/--w-out`). A/B tooling: `ab_compare.py` (`simulate` and `transcripts`).
+
+---
+
+## Surface 3: VS Code extension
+
+Side-by-side comparison of a raw prompt against the optimized one, plus inline tools. Extension ID `KamVinTech-contextgate.contextgate`; requires VS Code ≥ 1.90.
+
+```bash
+npm install && npm run compile      # tsc -p ./ ; then press F5 for the Extension Development Host
+```
+
+| Command | Mac | Win/Linux | Does |
+|---|---|---|---|
+| `ContextGate: Optimize Prompt & Active File Context` | `Cmd+Alt+O` | `Ctrl+Alt+O` | Runs the optimizer on the selection or a typed prompt, copies the compiled XML, opens the telemetry view |
+| `ContextGate: Open Prompt Diff` | `Cmd+Alt+D` | `Ctrl+Alt+D` | Native diff of old prompt vs optimized core prompt |
+| `ContextGate: Compare Raw vs. Optimized LLM Output` | `Cmd+Alt+C` | `Ctrl+Alt+C` | Runs both prompts on `vscode.lm` (Copilot) or HuggingFace and audits both responses |
+| `ContextGate: Compress Selected Prompt Inline` | `Cmd+Alt+I` | `Ctrl+Alt+I` | Replaces the selection with the compressed `<core_task>` |
+| `ContextGate: Show Logs` | `Cmd+Alt+L` | `Ctrl+Alt+L` | Opens the Output channel |
+
+Chat participant: `@contextgate /optimize <prompt>`, `@contextgate /compare <prompt>`, or `@contextgate <prompt>` (defaults to side-by-side comparison).
+
+| Setting | Default | Description |
+|---|---|---|
+| `contextGate.pythonPath` | `python3` | Interpreter used for the engine sidecar |
+| `contextGate.engineDirectory` | `""` | Directory containing `bridge_server.py`, `pipeline.py` (empty = the extension root, which bundles the engine) |
+| `contextGate.downstreamBackend` | `auto` | `auto` \| `vscode-lm` \| `huggingface` |
+| `contextGate.huggingFaceToken` / `huggingFaceModel` | `""` / `Qwen/Qwen2.5-Coder-32B-Instruct` | HuggingFace credentials and model |
+| `contextGate.compressionIntensity` | `AUTO` | `AUTO` \| `LIGHT` \| `MEDIUM` \| `AGGRESSIVE` |
+| `contextGate.maxTokenBudget` | `512` | Advisory `max_total_tokens` (not enforced as a total ceiling) |
+| `contextGate.autoShowLogs` / `optimizeOnSave` | `true` / `false` | Reveal the Output panel; refresh the inspector on save |
+| `contextGate.auditLogFile` | `""` | Optional file copy of the audit log. It contains **previews of your prompts**, so nothing is written to disk unless you set this (the Output stream is always on) |
+
+**Bridge sidecar (`bridge_server.py`).** A persistent process speaking one JSON object per line on stdin/stdout. Commands: `optimize`, `compare_hf` (pipeline + Raw and Compiled prompts to `app.py`; offline simulator without `HF_TOKEN`), `audit_pair` (audits responses produced by `vscode.lm`), `clear_cache`, `capabilities`, `ping`. Open workspace files are split into chunks of at most 45 words on blank lines and `def`/`class`/`function`/`export`/`interface` boundaries before MMR pruning. Smoke test: `echo '{"id":"1","command":"ping"}' | python3 bridge_server.py`.
+
+The extension ships exactly `bridge_server.py`, `pipeline.py`, `data_contracts.py`, `registry.py`, `protocol.py` and the compiled extension (allowlist in `.vscodeignore`, enforced by a test).
+
+**Reading the numbers in the UI.** "est. tokens" are the built-in estimator, not provider counts. "vs unpruned template" is measured against a *modeled baseline*, not against the request you would otherwise have sent (see below).
+
+---
+
+## The optimizer pipeline (`pipeline.py`)
+
+`optimize(RawRequest) -> CompiledPrompt` runs a deterministic four-stage flow and compiles a fixed XML template.
 
 ```python
 from data_contracts import RawRequest, TokenBudget
@@ -127,387 +190,161 @@ from pipeline import optimize
 
 result = optimize(RawRequest(
     text="Could you please write a Python function to reverse a string without using slicing?",
-    context_chunks=["...optional RAG chunks..."],
-    conversation_history=[{"role": "user", "content": "...prior turn..."}],
-    token_budget=TokenBudget(max_total_tokens=512),
-    compression_intensity="AUTO",
-    enable_cache=True,
+    token_budget=TokenBudget(),        # per-section budgets
 ))
-
-print(result.status)    # "OK"
-print(result.payload)   # Compiled XML prompt → feed to downstream agent
-print(result.trace)     # Full audit trail with before/after token telemetry
+print(result.status, result.payload)   # payload: compiled XML for the downstream agent
+print(result.trace)                    # OptimizationTrace
 ```
 
-### Status values
+`status` is `OK`, `NEEDS_CLARIFICATION` (a required slot is missing, so no model call is needed) or `INSUFFICIENT_CONTEXT` (see `data_contracts.py`).
 
-| Status | Meaning |
+| Step | What it does |
 |---|---|
-| `OK` | Compiled prompt ready for downstream agent |
-| `NEEDS_CLARIFICATION` | Required entity slot missing — returns clarification question, zero downstream tokens spent |
-| `INSUFFICIENT_CONTEXT` | Agent signals it cannot answer from provided context |
+| 1. Budgeting | `estimate_tokens` (pure-Python BPE-style estimate) and per-section budgets: `core_query_budget`, `context_budget`, `history_budget`, `tools_budget`, `few_shot_budget`. **`max_total_tokens` is advisory, not enforced as a total ceiling** (measured: the compiled payload stays ~629 est. tokens for caps 80–512) |
+| 2. Tool schema compression | Verbose JSON Schema to compact signatures: `tool_name(param:str, opt?:int=5) // desc`. Measured saving 95–120 est. tokens per registry tool (median 97) |
+| 3. MMR + BM25 + TF-IDF pruning | Relevance `0.65 × normalized BM25 + 0.35 × TF-IDF cosine`, then MMR for diversity. Applied to few-shots, tools, RAG chunks, history, workspace chunks |
+| 4. Sentence compressor | `45% BM25 + 35% TF-IDF centroid + 20% positional`; negations, constraints, code, URLs, emails are never pruned. Active only above `core_query_budget` words |
+| 5. Lexical normalization | NFKC, smart quotes, 14 contraction expansions, 10 verbose-idiom rewrites, deterministic stemmer |
+| Stage 2. Intent router | Weighted keywords (multi-word phrases 2.5×, lead-verb bonus), secondary intents, `task_hint` override. Intents: `CODE_GENERATION`, `DATA_EXTRACTION`, `TOOL_EXECUTION`, `FACTUAL_QA`, `AMBIGUOUS_QUERY` |
+| 6. Prompt cache | SHA-256 exact cache plus 64-bit SimHash near-duplicate cache (Hamming ≤ 2), gated on matching intent, negations, entities and context length; 256-entry LRU; `enable_cache=False` bypasses |
+| 7. History pruning | Newest turn always kept; older turns ranked by recency-weighted MMR `(relevance + 0.15) × 0.85^steps_back` within `history_budget` |
+| 8. Adaptive intensity | `AUTO` picks `LIGHT/MEDIUM/AGGRESSIVE` from token pressure; `MEDIUM` strips hedging adverbs; `AGGRESSIVE` strips articles above 25 words |
+| 9. Telemetry | `OptimizationTrace` with query-level and payload-level token counts, savings and per-section detail |
 
----
+**Pre-LLM slot check.** If a required parameter for the detected intent is missing (`REQUIRED_SLOTS`), the pipeline short-circuits before any model call. **Post-LLM audit.** `audit_agent_response()` scores a response against the extracted negations and entities.
 
-## Usage — VS Code Extension
+### Defaults (`TokenBudget`)
 
-Three commands are registered, all accessible from the Command Palette, editor right-click menu, or keyboard shortcuts:
-
-| Command | Shortcut (Mac) | Shortcut (Win/Linux) | What it does |
-|---|---|---|---|
-| `ContextGate: Optimize Prompt & Active File Context` | `Cmd+Alt+O` | `Ctrl+Alt+O` | Runs the 9-step pipeline on selected text or a typed prompt, copies compiled XML to clipboard, opens telemetry webview |
-| `ContextGate: Compare Raw vs. Optimized LLM Output` | `Cmd+Alt+C` | `Ctrl+Alt+C` | Runs Raw + Optimized prompts side-by-side on `vscode.lm` (Copilot) or HuggingFace, opens A/B compliance webview |
-| `ContextGate: Compress Selected Prompt Inline` | `Cmd+Alt+I` | `Ctrl+Alt+I` | Replaces selected text in editor with the compressed `<core_task>` output |
-
-### `@contextgate` Chat Participant
-
-Use `@contextgate` in the VS Code Chat panel:
-
-```
-@contextgate /optimize Could you please write a Python function to reverse a string without using slicing?
-@contextgate /compare  Search the web for the latest Python 3.12 release notes
-@contextgate           <any prompt>   ← defaults to side-by-side A/B comparison
-```
-
----
-
-## VS Code Extension Settings
-
-| Setting | Default | Description |
-|---|---|---|
-| `contextGate.pythonPath` | `python3` | Path to Python interpreter inside your `NLP-start` venv |
-| `contextGate.engineDirectory` | `""` | Directory containing `bridge_server.py`, `app.py`, `pipeline.py` |
-| `contextGate.downstreamBackend` | `auto` | `auto` \| `vscode-lm` \| `huggingface` |
-| `contextGate.huggingFaceToken` | `""` | HuggingFace API token (`HF_TOKEN`) |
-| `contextGate.huggingFaceModel` | `Qwen/Qwen2.5-Coder-32B-Instruct` | HuggingFace model ID |
-| `contextGate.compressionIntensity` | `AUTO` | `AUTO` \| `LIGHT` \| `MEDIUM` \| `AGGRESSIVE` |
-| `contextGate.maxTokenBudget` | `512` | Hard token ceiling for compiled payload |
-| `contextGate.auditLogFile` | `""` | Optional file copy of the audit log. The log contains **previews of your prompts**, so nothing is written to disk unless you set this (the Output panel stream is always on) |
-
----
-
-## Bridge Server (`bridge_server.py`)
-
-Persistent JSON-Lines sidecar spawned by `extension.ts`. Communicates over `stdin`/`stdout` — one JSON object per line.
-
-### Commands
-
-| Command | Description |
-|---|---|
-| `optimize` | Runs the 9-step deterministic pipeline, returns `payload` + `trace` |
-| `compare_hf` | Runs pipeline + forwards Raw & Compiled prompts to `app.py` (HuggingFace or offline simulator) |
-| `audit_pair` | Deterministically audits Raw vs. Optimized responses generated by `vscode.lm` |
-| `clear_cache` | Clears `PROMPT_CACHE` (256-entry LRU) |
-| `ping` | Health check — returns `pong` |
-
-### Workspace file chunking
-
-`bridge_server.py` splits open workspace files into semantic chunks (≤45 words each, split on blank lines and `def`/`class`/`function`/`export`/`interface` boundaries) before passing them as `context_chunks` to Stage 3 MMR pruning — so only the relevant slices of real files are injected into the compiled prompt.
-
----
-
-## HuggingFace Consumer (`app.py`)
-
-Standalone A/B evaluation script. Supports three execution modes:
-
-| Mode | Condition | Backend |
-|---|---|---|
-| Live | `HF_TOKEN` set + `huggingface_hub` installed | `InferenceClient` |
-| Live (fallback) | `HF_TOKEN` set, no `huggingface_hub` | `urllib.request` HTTP router |
-| Offline | No `HF_TOKEN` | Deterministic simulator (always works for UI/CLI testing) |
-
-```python
-from data_contracts import RawRequest
-from app import compare_raw_vs_optimized
-
-result = compare_raw_vs_optimized(RawRequest(
-    text="Could you please write a Python function to reverse a string without using slicing?"
-))
-# result keys: status, backend, raw_input_tokens, optimized_input_tokens,
-#              raw_response, raw_llm_latency_ms, raw_audit,
-#              optimized_payload, optimized_response, optimized_llm_latency_ms,
-#              optimized_audit, trace
-```
-
----
-
-## Pipeline Steps
-
-### Step 1 — Token-Aware Budgeting
-- Pure-Python BPE-calibrated subword token estimator (`estimate_tokens`) — matches `cl100k_base` within ~3%
-- `TokenBudget` enforces per-section ceilings: `max_total_tokens`, `core_query_budget`, `context_budget`, `history_budget`, `tools_budget`, `few_shot_budget`
-- Hard ceiling enforced at compile time — trims examples first if payload exceeds `max_total_tokens`
-
-### Step 2 — Tool Schema Compression
-- Compresses verbose JSON Schema into compact typed signatures: `tool_name(param:str, opt_param?:int=5) // short desc`
-- Saves 20–40 tokens per tool while preserving full type and optionality information
-
-### Step 3 — MMR + BM25 + TF-IDF Cosine Pruner
-- Hybrid relevance: `0.65 × Normalized_BM25 + 0.35 × TF-IDF_Cosine`, TF-IDF-only fallback when BM25 score is zero
-- MMR diversity selection prevents near-duplicate examples or context chunks
-- Applied to: few-shot examples, tool schemas, RAG context chunks, conversation history, and workspace file chunks
-
-### Step 4 — Composite Extractive Sentence Compressor
-- Scores sentences: `45% BM25 + 35% TF-IDF Centroid + 20% U-shaped positional weight`
-- Hard salience boosts (+100) for negations, constraints, code blocks, URLs, emails — never pruned
-- Only activates when input exceeds `core_query_budget` words
-
-### Step 5 — Lexical Normalization
-- NFKC Unicode normalization + smart quote replacement
-- 14 contraction expansions: `can't → cannot`, `I'd → I would`, etc.
-- 10 verbose idiom replacements: `in order to → to`, `due to the fact that → because`, etc.
-- Deterministic morphological stemmer (`_fast_stem`) — no neural models
-
-### Stage 2 — Weighted Intent Router
-- Weighted keyword scoring — multi-word phrases like `"python function"` score 2.5×
-- Lead-verb position bonus: match in first 3 words doubles score
-- Secondary intent detection, `task_hint` override, spaCy root verb extraction with `_KNOWN_TASK_VERBS` fallback
-
-| Intent | Example Trigger Keywords |
-|---|---|
-| `CODE_GENERATION` | write, generate, implement, function, sql query, python function… |
-| `DATA_EXTRACTION` | extract, parse, find all, scrape, regex, extract all… |
-| `TOOL_EXECUTION` | run, execute, search the web, read file, invoke… |
-| `FACTUAL_QA` | what is, who is, when did, capital of, why does… |
-| `AMBIGUOUS_QUERY` | fallback when no keywords match |
-
-### Step 6 — Deterministic Prompt Cache
-- Tier 1 — SHA-256 canonical exact cache: O(1) lookup
-- Tier 2 — 64-bit SimHash LSH near-duplicate cache: Hamming distance ≤ 2, gated by safety signature matching 100% on `intent`, `negations`, `entities`, `context_len`
-- LRU eviction at 256 entries; `enable_cache=False` bypasses both tiers
-- Cache hits return in <1.5ms
-
-### Step 7 — Conversation History Pruning
-- Most recent turn always retained
-- Older turns ranked via Recency-Weighted MMR: `score = (hybrid_relevance + 0.15) × 0.85^steps_back`
-- Injected as `<conversation_history>` XML block within `history_budget`
-
-### Step 8 — Adaptive Intensity Selection
-- `AUTO` selects `LIGHT / MEDIUM / AGGRESSIVE` based on token pressure against `core_query_budget`
-- `MEDIUM`: strips hedging adverbs (`basically`, `actually`, `essentially`, etc.)
-- `AGGRESSIVE`: removes articles (`a`, `an`, `the`) when input exceeds 25 words
-
-### Step 9 — Comprehensive Token Telemetry
-- Query-level and full-payload-level before/after token counts
-- `OptimizationTrace` reports `query_token_savings_pct` and `payload_token_savings_pct`
-
----
-
-## Data Contracts
-
-### `RawRequest`
-| Field | Type | Default | Purpose |
-|---|---|---|---|
-| `text` | `str` | required | Raw user input |
-| `task_hint` | `str` | `""` | Force a specific intent label |
-| `context_chunks` | `list[str]` | `[]` | External RAG chunks for MMR pruning |
-| `conversation_history` | `list[dict]` | `[]` | Prior turns `[{"role": "user\|assistant", "content": "..."}]` |
-| `token_budget` | `TokenBudget` | defaults | Per-section token ceilings |
-| `compression_intensity` | `str` | `"AUTO"` | `AUTO \| LIGHT \| MEDIUM \| AGGRESSIVE` |
-| `enable_cache` | `bool` | `True` | Toggle deterministic prompt cache |
-
-### `TokenBudget`
 | Field | Default | Controls |
 |---|---|---|
-| `max_total_tokens` | 512 | Hard ceiling for entire compiled payload |
-| `core_query_budget` | 120 | Max words in compressed query |
-| `context_budget` | 160 | Max tokens for pruned RAG context |
-| `history_budget` | 80 | Max tokens for pruned conversation history |
-| `tools_budget` | 60 | Max tokens for compressed tool schemas |
-| `few_shot_budget` | 90 | Max tokens for selected few-shot examples |
+| `max_total_tokens` | 512 | Advisory only |
+| `core_query_budget` | 120 | Max words in the compressed query |
+| `context_budget` | 160 | Max tokens of pruned RAG context |
+| `history_budget` | 80 | Max tokens of pruned history |
+| `tools_budget` | 60 | Max tokens of compressed tool schemas |
+| `few_shot_budget` | 90 | Max tokens of selected few-shots |
 
-### `OptimizationTrace`
-```python
-OptimizationTrace(
-    raw_token_count=16,           optimized_token_count=13,
-    query_token_savings_pct=18.8,
-    unoptimized_payload_token_count=420,
-    compiled_payload_token_count=310,
-    payload_token_savings_pct=26.2,
-    tool_schema_tokens_saved=34,
-    detected_intent="CODE_GENERATION",
-    secondary_intents=[],         intent_confidence=1.0,
-    compression_intensity_used="MEDIUM",
-    pruning_strategy_used="MMR+BM25+TFIDF",
-    stripped_tokens=["Could you please"],
-    normalized_phrases=[],        negations=["without"],
-    extracted_entities={"action": "write"},
-    injected_example_ids=["ex_code_gen_1", "ex_code_gen_2"],
-    injected_tool_ids=["run_python"],
-    kept_context_indices=[],      kept_history_turns=0,
-    cache_hit=False,              cache_type="NONE",
-    cache_key="a3f1c9...",        simhash_signature="0a1b2c3d4e5f6789",
-    latency_ms=3.81,
-)
+### What `payload_token_savings_pct` means
+
+It compares the compiled payload against a **modeled baseline**: the unpruned template containing every registry tool, every few-shot example, every guardrail and all context and history (`_estimate_unoptimized_baseline_tokens`). It is **not** savings versus the request you would otherwise have sent. For short prompts the compiled payload is *larger* than the raw prompt (9–31 raw tokens compile to roughly 350–430 tokens because of the template, guardrails, tools and examples). The prompt-text figure (`query_token_savings_pct`) is the honest per-prompt number.
+
+---
+
+## Measured results (what we can and cannot claim)
+
+| Claim | Evidence |
+|---|---|
+| Strict gate on RAG built from real docs (synthetic framing) | ≈0.9–1.1% request savings |
+| Claude Code hook pilot | ≈-20% weighted cost, 95% CI -44%..+4%, n=4 (**not significant**); -57..60% exploration calls |
+| MCP tools in agent runs | used in 0 of 8 runs |
+| Gate overhead | ≈1 ms mean, ≈5 ms p95 on RAG-sized requests |
+| Optimizer payload vs raw request (8 chunks + 6 turns) | -64% (1868 → 677 est. tokens) |
+| Optimizer payload vs raw short prompt | larger: the template adds ~350–430 tokens |
+| Token estimator vs `cl100k_base` (151 samples) | median +12% over-count (code ~13–16%, JSON ~29%, prose ~7%); ~16% within 3% |
+| Session cost structure | fixed prefix ≈82%, appended context 7.6%, output 10.5%, typed prompt 0.1%; one avoided API call ≈9.3% of a session; cold cache +76% |
+
+Cost model used by `smarty audit`: weighted cost = input + 1.25×cache_write + 0.10×cache_read + 5×output (the weights are assumptions; override them on the command line).
+
+---
+
+## Safety guarantees
+
+Each has tests.
+
+| Mechanism | Prevents |
+|---|---|
+| Protected spans (fenced/inline code, URLs, emails, paths, identifiers, quoted strings, JSON, digit tokens, negation clauses) | The gate altering anything load-bearing; spans are re-verified after compression, with fallback to the original text |
+| Deterministic, causal transforms | Breaking provider prompt-cache prefixes |
+| Fail-open | A gate bug blocking or corrupting a request: the exact original bytes are forwarded |
+| Never forward a larger request | Negative savings |
+| Negation-safe compression; negation spans kept verbatim in `<task_metadata>` | Dropping `not`, `never`, `without`, `unless`, `neither`, `nor` |
+| `<extracted_entities>` block | Mutation of exact dates, emails, URLs, quoted strings |
+| Pre-LLM slot check | Spending tokens when a required parameter is missing |
+| SimHash cache safety gate | Near-duplicate hits when intent, negations or entities differ |
+| Abstention rule in the template (`STATUS: INSUFFICIENT_CONTEXT`) | The agent fabricating when data is missing |
+| XML tag sanitization | User input injecting or overriding reserved template tags |
+| Credentials forwarded untouched, never logged or stored; counts-only ledger | Secret and prompt leakage through the gateway |
+
+---
+
+## Project layout
+
+```
+NLP-Smarty/
+├── gate.py  gateway.py  ledger.py  gate_bench.py        # gateway surface
+├── pipeline.py  data_contracts.py  registry.py  protocol.py   # optimizer + contracts
+├── repo_indexer.py  smarty_hook.py  mcp_server.py  smarty_cli.py   # repo-intelligence surface
+├── bridge_server.py  app.py  src/extension.ts            # VS Code surface
+├── token_audit.py  ab_compare.py  eval_retrieval.py      # measurement
+├── test_harness.py  tests/                               # benchmark + pytest suites
+├── tools/  (bump_version.py, check_release.py)
+├── .github/workflows/  (ci.yml, release.yml)
+└── package.json  pyproject.toml  tsconfig.json  .vscodeignore
 ```
 
----
+## Dependencies
 
-## Anti-Hallucination Guarantees
+| Package | Purpose | Fallback |
+|---|---|---|
+| none (stdlib) | Gateway, gate, ledger, hook, MCP, CLI, indexer | n/a |
+| `spacy` + `en_core_web_sm` (NER disabled) | POS tagging, root verb extraction | Regex sentence splitting + `_KNOWN_TASK_VERBS` |
+| `rank_bm25` | BM25 scoring | Built-in `_FastBM25Okapi` |
+| `scikit-learn` | TF-IDF utilities | Built-in sparse TF-IDF + cosine |
+| `flashtext` | Keyword matching | Weighted regex patterns |
+| `huggingface_hub` | Live HF calls in `app.py` | `urllib` HTTP, then offline simulator |
 
-| Mechanism | What it prevents |
+Extension build: `typescript ^5.4.0`, `@types/vscode ^1.90.0`, `@types/node ^20.0.0`.
+
+## Tests
+
+| Command | Covers |
 |---|---|
-| Negation-safe compression (Step 5) | Optimizer never deletes `not`, `never`, `without`, `unless`, `neither`, `nor` |
-| Negation span extraction | Full constraint phrases like `"without using recursion"` preserved verbatim in `<task_metadata>` |
-| `<extracted_entities>` block | Agent receives exact dates, emails, URLs, quoted strings verbatim — no mutation |
-| MMR tool pruning (Step 3) | Agent only sees relevant, deduplicated tool schemas — no irrelevant tool calls |
-| Tool schema compression (Step 2) | Compact signatures reduce token noise without losing type or optionality |
-| Pre-LLM slot check | LLM never called when required parameters are missing — zero tokens wasted |
-| SimHash cache safety gate | Near-duplicate cache hits blocked when intent, negations, or entities differ |
-| `INSUFFICIENT_CONTEXT` escape hatch | Agent abstains instead of fabricating when data is missing |
-| XML tag sanitization | User input cannot inject or override reserved XML template tags |
-| Deterministic response audit | `audit_agent_response()` scores compliance against extracted negations and entities |
+| `python3 -m pytest -q --tb=short tests` | Gate fuzzing and prefix stability, gateway (OpenAI + Anthropic), adversarial inputs (`test_security.py`), ledger, hook, MCP, CLI, release hygiene, extension manifest, README claims guard (`test_claims.py`) |
+| `python3 test_harness.py \| tail -n 30` | Optimizer benchmark (5 baseline prompts) and 7 regression checks: normalization, extractive compression, MMR context pruning, history pruning, schema compression, cache hit on paraphrase, missing-slot short-circuit |
+| `python3 tools/check_release.py` | Version alignment, no junk tracked, packaging audit |
+| `npm run compile` | Extension type-check |
 
----
+## Extending the registry
 
-## Test Harness
-
-`test_harness.py` runs two suites:
-
-**Part A — 5 Baseline Prompts**: full before/after telemetry (query tokens + payload tokens + schema savings + latency).
-
-**Part B — 7 Regression Tests**:
-
-| Test | Feature Validated |
-|---|---|
-| 6 | Lexical normalization + adaptive MEDIUM intensity |
-| 7 | Extractive sentence compression + AGGRESSIVE intensity |
-| 8 | MMR external context pruning (deduplicating near-duplicate RAG chunks) |
-| 9 | Conversation history pruning (recency-weighted MMR) |
-| 10 | Tool schema compression + morphological stemming match |
-| 11 | Deterministic canonical cache hit on paraphrased polite prefix |
-| 12 | Missing mandatory slot early short-circuit (zero downstream tokens) |
-
----
-
-## Extending the Registry
-
-Edit `registry.py` — no changes to `pipeline.py` needed.
+Edit `registry.py`; `pipeline.py` needs no changes. The registry currently holds 4 tools, 6 few-shot examples and 3 guardrails.
 
 ```python
-# Add a tool (verbose JSON Schema enables Step 2 compression)
 TOOL_REGISTRY.append({
     "id": "query_database",
     "trigger_keywords": ["database", "db", "table", "select", "insert"],
     "schema": json.dumps({
         "name": "query_database",
         "description": "Executes a read-only SQL query against the database.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "sql": {"type": "string", "description": "SQL SELECT statement"},
-                "limit": {"type": "integer", "description": "Max rows to return", "default": 100},
-            },
-            "required": ["sql"],
-        },
+        "parameters": {"type": "object",
+                       "properties": {"sql": {"type": "string", "description": "SQL SELECT statement"},
+                                      "limit": {"type": "integer", "description": "Max rows to return", "default": 100}},
+                       "required": ["sql"]},
     }),
 })
 
-# Add a few-shot example (intent tag enables MMR boosting in Step 3)
 FEW_SHOT_EXAMPLES.append({
-    "id": "ex_code_gen_3",
-    "intent": "CODE_GENERATION",
+    "id": "ex_code_gen_3", "intent": "CODE_GENERATION",
     "input": "Write a binary search function in Python",
     "output": "def binary_search(arr, target):\n    lo, hi = 0, len(arr)-1\n    ...",
 })
 ```
-
----
-
-## Dependencies
-
-### Python
-| Package | Purpose | Fallback |
-|---|---|---|
-| `spacy` + `en_core_web_sm` | POS tagging, dependency parsing, root verb extraction | Regex sentence splitting + `_KNOWN_TASK_VERBS` dict |
-| `rank_bm25` | BM25Okapi scoring | Built-in `_FastBM25Okapi` zero-dependency implementation |
-| `scikit-learn` | TF-IDF utilities | Built-in sparse TF-IDF + cosine implementation |
-| `flashtext` | O(n) trie keyword matching | Replaced by weighted regex patterns in v3 |
-| `huggingface_hub` | `InferenceClient` for live HF API calls | `urllib.request` HTTP fallback → offline simulator |
-
-### TypeScript / VS Code Extension
-| Package | Purpose |
-|---|---|
-| `@types/vscode ^1.90.0` | VS Code extension API types |
-| `@types/node ^20.0.0` | Node.js built-in types (`child_process`, `path`, `readline`, `buffer`, `process`) |
-| `typescript ^5.4.0` | TypeScript compiler |
-
-## Repo Intelligence for Coding Agents (`smarty`)
-
-Zero-LLM, stdlib-only. Indexes your repo (symbols + line spans, hash-checked so spans never go stale), then delivers a small
-budgeted `<retrieved_context>` capsule to the agent via a Claude Code `UserPromptSubmit` hook and an MCP server.
-
-```bash
-python smarty_cli.py init --dry-run          # preview every change as a diff
-python smarty_cli.py init --agents-md        # hooks + MCP + index (+ static CLAUDE.md/AGENTS.md block)
-python smarty_cli.py doctor                  # verify end to end
-python smarty_cli.py uninstall [--purge]     # remove only what init added
-```
-
-- Hooks go to `.claude/settings.local.json` (machine-specific, git-excluded); use `--scope project` to share them.
-- `init` is idempotent, merges into existing JSON (aborts on unparseable files), and keeps one-time backups in `.smarty/backups/`.
-- MCP tools: `smarty_get_context`, `smarty_find_symbol`, `smarty_find_references` (definitions, callers and ranked, token-budgeted usages), `smarty_repo_map`, `smarty_get_slice` (+ the original optimizer tools). The server's agent-facing instructions are **off by default** (a live test showed the agent never used the tools even with them); opt in with `SMARTY_MCP_INSTRUCTIONS=on` in the `env` of `.mcp.json`.
-- Measure retrieval quality: `python eval_retrieval.py --golden` (hand-labelled queries) or without flags (git history).
-- `pip install .` provides `smarty`, `smarty-mcp` and `smarty-hook` commands.
-
-## Gateway: deterministic pre-ingestion proxy (`smarty serve`)
-
-An OpenAI-compatible proxy for any SDK or pipeline (HuggingFace router, Copilot-style gateways, LangChain, ...):
-
-```bash
-python smarty_cli.py serve --upstream https://api.openai.com --profile strict   # then base_url=http://127.0.0.1:8787/v1
-python smarty_cli.py stats [--prices prices.json] [--since 24h]                  # measured savings ledger
-python smarty_cli.py bench traffic.jsonl                                         # offline replay of recorded requests
-```
-
-- **Profiles:** `strict` (default: prose of user messages and tool-schema descriptions only), `balanced` (+ hedging words,
-  causal duplicate collapse), `aggressive` (+ articles in long prose). All three keep protected spans verbatim.
-- **Guarantees (each has tests):** code, URLs, identifiers, paths, quoted strings, JSON, numbers and negation clauses are
-  never altered and are re-verified after compression, falling back to the original text; transforms are deterministic and
-  causal so provider prompt-cache prefixes stay stable; tool schemas keep their exact JSON structure; fail-open on any
-  error; credentials are forwarded untouched and never stored; binds to loopback unless `--allow-remote`; streaming is
-  relayed as it arrives; SIGTERM waits for in-flight requests so no ledger row is lost.
-- **Ledger (`~/.smarty/ledger.db`):** counts only, never content. Savings are original vs forwarded request size with the
-  same estimator, calibrated against the provider's exact `usage`; USD uses a price table you supply.
-- **Anthropic `/v1/messages`** (e.g. Claude Code): `serve --upstream https://api.anthropic.com`, then `ANTHROPIC_BASE_URL=http://127.0.0.1:8787`.
-  Only the user's plain-text blocks and tool-schema descriptions are ever rewritten: `system`, `thinking` (signed: any edit
-  invalidates it), `tool_use`, `tool_result` (strict), `<system-reminder>` wrappers and `cache_control` markers are forwarded
-  verbatim. Usage is normalised (fresh + cache reads + cache writes) so calibration matches the whole request. `count_tokens`
-  and batches are relayed ungated. **Verified by tests against the documented format and block shapes seen in real request
-  recordings; not yet verified against live Claude Code.** Per the
-  [Claude Code gateway docs](https://code.claude.com/docs/en/llm-gateway-connect), a base URL alone does not replace a
-  subscription login (a gateway credential is needed) and the **desktop app ignores `ANTHROPIC_BASE_URL`/`settings.json`**;
-  use the CLI or the VS Code extension setting.
-- **Measure before you claim:** on RAG requests built from real documents the strict profile saved about 1% (prose
-  compression has little to remove from well-written text). Larger wins need structural reductions (pruning, duplicates,
-  bulky tool schemas): run `serve --record traffic.jsonl` and `bench` on your own traffic to see what applies.
 
 ## Releasing
 
 Versions live in four places (`pyproject.toml`, `protocol.py`, `package.json`, `package-lock.json`); never edit them by hand:
 
 ```bash
-python tools/bump_version.py 0.7.0      # updates all four and verifies them
+python3 tools/bump_version.py 0.7.0      # updates all four and verifies them
 git commit -am "release 0.7.0" && git tag v0.7.0 && git push origin main v0.7.0
 ```
 
-Pushing the tag runs [`release.yml`](.github/workflows/release.yml): verify (versions match the tag, no junk tracked, tests) ->
-build wheel + sdist and the `.vsix` (audited by `tools/check_release.py`; the packaged engine is smoke-tested) -> GitHub Release
-with all artifacts attached. **Actions -> Release -> Run workflow** is a dry run that builds and checks everything and publishes nothing.
+Pushing the tag runs [`release.yml`](.github/workflows/release.yml): verify (versions match the tag, no junk tracked, tests) → build wheel + sdist and the `.vsix` (audited by `tools/check_release.py`; the packaged engine is smoke-tested) → GitHub Release with all artifacts attached. **Actions → Release → Run workflow** is a dry run that builds and checks everything and publishes nothing.
 
 One-time setup for publishing (nothing publishes until you do these):
-- **VS Code Marketplace:** create a publisher at <https://marketplace.visualstudio.com/manage> whose ID equals `publisher` in
-  `package.json` (`KamVinTech-contextgate`, so the extension ID is `KamVinTech-contextgate.contextgate`). The ID is **permanent**
-  once created. Then add a credential as the repository secret `VSCE_PAT` (a Personal Access Token with the *Marketplace > Manage*
-  scope). **Global Azure DevOps tokens retire on 2026-12-01**: a token created this way works for a first release before then, but
-  later releases need Microsoft Entra ID (`vsce publish --azure-credential` with a federated GitHub credential). Without any
-  credential the Marketplace step is skipped and the `.vsix` is still attached to the release.
-- **PyPI (opt-in):** add this repository as a *trusted publisher* on PyPI (workflow `release.yml`, environment `pypi`), create the
-  GitHub environment `pypi`, and set the repository variable `PUBLISH_PYPI=true`. No API token is stored anywhere.
-  **PyPI is blocked on purpose until the code lives under one package:** today the wheel installs 17 top-level modules
-  (`app`, `registry`, `protocol`, `pipeline`, ...) into `site-packages`, which would collide with other projects; the publish job runs
-  `tools/check_release.py --strict-namespace` and refuses. Do the rename-to-one-package together with choosing the product name.
 
-Privacy: the engine writes an audit log of prompt previews only when `SMARTY_AUDIT_LOG=<path>` is set; by default nothing is
-persisted to disk (the live stream in the VS Code Output panel is unaffected).
-License: MIT (see `LICENSE`).
+- **VS Code Marketplace:** the publisher ID must equal `publisher` in `package.json` (`KamVinTech-contextgate`) and is permanent once created. Add a credential as the repository secret `VSCE_PAT` (scope *Marketplace > Manage*). Global Azure DevOps tokens retire on 2026-12-01; later releases need Microsoft Entra ID (`vsce publish --azure-credential`). Without a credential the Marketplace step is skipped and the `.vsix` is still attached to the release.
+- **PyPI (opt-in):** add the repository as a trusted publisher (workflow `release.yml`, environment `pypi`), create the GitHub environment `pypi` and set the repository variable `PUBLISH_PYPI=true`. **Blocked on purpose** until the code lives under one package: the wheel installs 17 top-level modules into `site-packages`, and the publish job runs `tools/check_release.py --strict-namespace` and refuses.
+
+## Privacy and license
+
+The engine writes an audit log of prompt previews only when `SMARTY_AUDIT_LOG=<path>` is set; by default nothing is persisted. The gateway ledger stores counts only. License: MIT (see `LICENSE`).

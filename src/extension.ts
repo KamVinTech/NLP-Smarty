@@ -249,7 +249,7 @@ class ContextGateInspectorPanel {
         sourceLabel: string,
         onAction: (action: string) => void
     ): void {
-        const title = `ContextGate Stats: -${t.payload_token_savings_pct}% Payload | -${t.query_token_savings_pct}% Query (${t.latency_ms}ms)`;
+        const title = `ContextGate Stats: -${t.payload_token_savings_pct}% vs unpruned template | -${t.query_token_savings_pct}% prompt text (${t.latency_ms}ms)`;
         if (ContextGateInspectorPanel.currentPanel) {
             ContextGateInspectorPanel.currentPanel.title = title;
             ContextGateInspectorPanel.currentPanel.reveal(vscode.ViewColumn.Beside, true);
@@ -518,12 +518,12 @@ function buildLiveComparisonHtml(
     <div class="card">
       <div class="label">Core Prompt Compression</div>
       <div class="metric">${t.raw_token_count} &rarr; ${t.optimized_token_count} words (-${t.query_token_savings_pct}%)</div>
-      <div class="sub-metric">BPE Subwords: ${t.raw_bpe_tokens} &rarr; ${t.optimized_bpe_tokens} (-${t.query_bpe_savings_pct}%)</div>
+      <div class="sub-metric">Est. tokens: ${t.raw_bpe_tokens} &rarr; ${t.optimized_bpe_tokens} (-${t.query_bpe_savings_pct}%)</div>
     </div>
     <div class="card">
-      <div class="label">Full Agent Payload Budget</div>
+      <div class="label">Payload vs modeled unpruned template</div>
       <div class="metric">${t.unoptimized_payload_token_count} &rarr; ${t.compiled_payload_token_count} (-${t.payload_token_savings_pct}%)</div>
-      <div class="sub-metric">Saved ${t.unoptimized_payload_token_count - t.compiled_payload_token_count} BPE tokens total</div>
+      <div class="sub-metric">Saved ${t.unoptimized_payload_token_count - t.compiled_payload_token_count} est. tokens vs modeled baseline</div>
     </div>
     <div class="card">
       <div class="label">Intent &amp; Adaptive Mode</div>
@@ -540,11 +540,11 @@ function buildLiveComparisonHtml(
   <h3>1. Side-by-Side Prompt Comparison (Old vs. New Core Task)</h3>
   <div class="split-grid">
     <div>
-      <div class="label" style="margin-bottom:6px;">Old Prompt (${t.raw_token_count} words / ${t.raw_bpe_tokens} BPE tokens — Red = Stripped Filler)</div>
+      <div class="label" style="margin-bottom:6px;">Old Prompt (${t.raw_token_count} words / ${t.raw_bpe_tokens} est. tokens — Red = Stripped Filler)</div>
       <div class="prompt-box">${highlightedRaw}</div>
     </div>
     <div>
-      <div class="label" style="margin-bottom:6px;">New Optimized Core Task (${t.optimized_token_count} words / ${t.optimized_bpe_tokens} BPE tokens)</div>
+      <div class="label" style="margin-bottom:6px;">New Optimized Core Task (${t.optimized_token_count} words / ${t.optimized_bpe_tokens} est. tokens)</div>
       <div class="prompt-box">${escapeHtml(coreQuery)}</div>
     </div>
   </div>
@@ -563,43 +563,43 @@ function buildLiveComparisonHtml(
     <tbody>
       <tr>
         <td><strong>User Query / Document (Stage 1)</strong></td>
-        <td>${t.raw_bpe_tokens} BPE (${t.raw_token_count}w)</td>
-        <td>${t.optimized_bpe_tokens} BPE (${t.optimized_token_count}w)</td>
+        <td>${t.raw_bpe_tokens} est. (${t.raw_token_count}w)</td>
+        <td>${t.optimized_bpe_tokens} est. (${t.optimized_token_count}w)</td>
         <td><div class="bar-wrap"><div class="bar-fill" style="width:${Math.min(100, t.query_bpe_savings_pct)}%"></div></div><strong>-${t.query_bpe_savings_pct}%</strong></td>
         <td>Stripped ${t.stripped_tokens.length} filler phrase(s), normalized ${t.normalized_phrases.length} idiom(s), preserved Markdown/code blocks</td>
       </tr>
       <tr>
         <td><strong>Workspace File Context (Stage 3 MMR)</strong></td>
-        <td>${t.raw_context_tokens} BPE (${t.total_context_chunks} chunks)</td>
-        <td>${t.pruned_context_tokens} BPE (${t.kept_context_indices.length} chunks)</td>
+        <td>${t.raw_context_tokens} est. (${t.total_context_chunks} chunks)</td>
+        <td>${t.pruned_context_tokens} est. (${t.kept_context_indices.length} chunks)</td>
         <td><div class="bar-wrap"><div class="bar-fill" style="width:${Math.min(100, t.context_token_savings_pct)}%"></div></div><strong>-${t.context_token_savings_pct}%</strong></td>
         <td>Kept chunk indices: <code>${escapeHtml(JSON.stringify(t.kept_context_indices))}</code> via Hybrid BM25+TFIDF MMR</td>
       </tr>
       <tr>
         <td><strong>Tool Schemas (Step 2 Compiler)</strong></td>
-        <td>${t.raw_tools_tokens} BPE (all ${4} tools)</td>
-        <td>${t.compressed_tools_tokens} BPE (${t.injected_tool_ids.length} matched)</td>
+        <td>${t.raw_tools_tokens} est. (all ${4} tools)</td>
+        <td>${t.compressed_tools_tokens} est. (${t.injected_tool_ids.length} matched)</td>
         <td><div class="bar-wrap"><div class="bar-fill" style="width:${Math.min(100, toolsPct)}%"></div></div><strong>-${toolsPct}%</strong></td>
         <td>Injected: <code>${escapeHtml(JSON.stringify(t.injected_tool_ids))}</code> (saved ${t.tool_schema_tokens_saved} schema toks)</td>
       </tr>
       <tr>
         <td><strong>Few-Shot Examples (Stage 3 MMR)</strong></td>
-        <td>${t.raw_examples_tokens} BPE (all 6 examples)</td>
-        <td>${t.selected_examples_tokens} BPE (${t.injected_example_ids.length} selected)</td>
+        <td>${t.raw_examples_tokens} est. (all 6 examples)</td>
+        <td>${t.selected_examples_tokens} est. (${t.injected_example_ids.length} selected)</td>
         <td><div class="bar-wrap"><div class="bar-fill" style="width:${Math.min(100, exPct)}%"></div></div><strong>-${exPct}%</strong></td>
         <td>Selected IDs: <code>${escapeHtml(JSON.stringify(t.injected_example_ids))}</code></td>
       </tr>
       <tr>
         <td><strong>Conversation History (Step 7)</strong></td>
-        <td>${t.raw_history_tokens} BPE</td>
-        <td>${t.pruned_history_tokens} BPE (${t.kept_history_turns} turns)</td>
+        <td>${t.raw_history_tokens} est.</td>
+        <td>${t.pruned_history_tokens} est. (${t.kept_history_turns} turns)</td>
         <td><div class="bar-wrap"><div class="bar-fill" style="width:${Math.min(100, histPct)}%"></div></div><strong>-${histPct}%</strong></td>
         <td>Recency-weighted MMR (0.85^age decay)</td>
       </tr>
       <tr style="background: var(--vscode-editorWidget-background); font-weight: 700;">
-        <td><strong>Total Compiled Agent Payload</strong></td>
-        <td>${t.unoptimized_payload_token_count} BPE tokens</td>
-        <td>${t.compiled_payload_token_count} BPE tokens</td>
+        <td><strong>Compiled payload (vs modeled unpruned template)</strong></td>
+        <td>${t.unoptimized_payload_token_count} est. tokens</td>
+        <td>${t.compiled_payload_token_count} est. tokens</td>
         <td><div class="bar-wrap"><div class="bar-fill" style="width:${Math.min(100, t.payload_token_savings_pct)}%"></div></div><strong>-${t.payload_token_savings_pct}%</strong></td>
         <td>Compiled with XML anti-hallucination guardrails</td>
       </tr>
@@ -795,25 +795,25 @@ export function activate(context: vscode.ExtensionContext) {
     const openNativeDiffView = async (rawPrompt: string, compiledPayload: string, t: OptimizationTrace) => {
         const coreOptimized = t.compressed_query_text || compiledPayload;
         const leftContent =
-            `// ══════════════ OLD RAW PROMPT (${t.raw_token_count} words | ${t.raw_bpe_tokens} BPE tokens) ══════════════\n` +
+            `// ══════════════ OLD RAW PROMPT (${t.raw_token_count} words | ${t.raw_bpe_tokens} est. tokens) ══════════════\n` +
             `${rawPrompt}\n\n` +
             `// ══════════════ UNOPTIMIZED BASELINE STATS ══════════════\n` +
-            `// Full Unoptimized Payload : ${t.unoptimized_payload_token_count} BPE tokens\n` +
-            `// Unpruned Context Chunks  : ${t.total_context_chunks} chunks (${t.raw_context_tokens} BPE tokens)\n` +
-            `// Raw Tool Schemas         : ${t.raw_tools_tokens} BPE tokens\n` +
-            `// All Few-Shot Examples    : ${t.raw_examples_tokens} BPE tokens\n`;
+            `// Modeled Unpruned Payload: ${t.unoptimized_payload_token_count} est. tokens\n` +
+            `// Unpruned Context Chunks  : ${t.total_context_chunks} chunks (${t.raw_context_tokens} est. tokens)\n` +
+            `// Raw Tool Schemas         : ${t.raw_tools_tokens} est. tokens\n` +
+            `// All Few-Shot Examples    : ${t.raw_examples_tokens} est. tokens\n`;
 
         const rightContent =
-            `// ══════════════ NEW OPTIMIZED CORE PROMPT (${t.optimized_token_count} words | ${t.optimized_bpe_tokens} BPE tokens | -${t.query_token_savings_pct}%) ══════════════\n` +
+            `// ══════════════ NEW OPTIMIZED CORE PROMPT (${t.optimized_token_count} words | ${t.optimized_bpe_tokens} est. tokens | -${t.query_token_savings_pct}%) ══════════════\n` +
             `${coreOptimized}\n\n` +
-            `// ══════════════ OPTIMIZATION TELEMETRY & SAVINGS (-${t.payload_token_savings_pct}% Total Payload) ══════════════\n` +
-            `// Compiled Payload Budget  : ${t.compiled_payload_token_count} BPE tokens (saved ${t.unoptimized_payload_token_count - t.compiled_payload_token_count} tokens)\n` +
+            `// ══════════════ OPTIMIZATION TELEMETRY & SAVINGS (-${t.payload_token_savings_pct}% vs modeled unpruned template) ══════════════\n` +
+            `// Compiled Payload Budget  : ${t.compiled_payload_token_count} est. tokens (saved ${t.unoptimized_payload_token_count - t.compiled_payload_token_count} tokens)\n` +
             `// Detected Intent & Mode   : ${t.detected_intent} (conf=${t.intent_confidence}, mode=${t.compression_intensity_used})\n` +
             `// Stripped Filler Phrases  : ${JSON.stringify(t.stripped_tokens)}\n` +
             `// Normalized Idioms        : ${JSON.stringify(t.normalized_phrases)}\n` +
             `// Protected Negations      : ${JSON.stringify(t.negations)}\n` +
             `// Extracted Entities       : ${JSON.stringify(t.extracted_entities)}\n` +
-            `// Kept Context Chunks (MMR): ${JSON.stringify(t.kept_context_indices)} / ${t.total_context_chunks} (${t.pruned_context_tokens} BPE tokens, -${t.context_token_savings_pct}%)\n` +
+            `// Kept Context Chunks (MMR): ${JSON.stringify(t.kept_context_indices)} / ${t.total_context_chunks} (${t.pruned_context_tokens} est. tokens, -${t.context_token_savings_pct}%)\n` +
             `// Injected Tools           : ${JSON.stringify(t.injected_tool_ids)} (saved ${t.tool_schema_tokens_saved} schema tokens)\n` +
             `// Latency & Cache          : ${t.latency_ms} ms (${t.cache_hit ? t.cache_type : 'LIVE'})\n\n` +
             `// ══════════════ FULL COMPILED XML PAYLOAD ══════════════\n` +
@@ -877,7 +877,7 @@ export function activate(context: vscode.ExtensionContext) {
         lastCompiledPayload = res.payload || '';
         lastTrace = t;
 
-        statusBar.text = `$(zap) ContextGate: ${t.raw_token_count}→${t.optimized_token_count}w (-${t.query_token_savings_pct}%) | Payload -${t.payload_token_savings_pct}% (${t.latency_ms}ms)`;
+        statusBar.text = `$(zap) ContextGate: ${t.raw_token_count}→${t.optimized_token_count}w (-${t.query_token_savings_pct}%) | vs unpruned template -${t.payload_token_savings_pct}% (${t.latency_ms}ms)`;
         await vscode.env.clipboard.writeText(res.payload || '');
 
         // Always open the side-by-side Live Comparison & Stats Webview alongside the file
@@ -1090,10 +1090,10 @@ export function activate(context: vscode.ExtensionContext) {
                         `| Metric | Old (Raw) | New (Optimized) | Savings |\n` +
                         `| :--- | :--- | :--- | :--- |\n` +
                         `| **Prompt Words** | \`${t.raw_token_count}w\` | \`${t.optimized_token_count}w\` | **-${t.query_token_savings_pct}%** |\n` +
-                        `| **Query Subwords (BPE)** | \`${t.raw_bpe_tokens}\` | \`${t.optimized_bpe_tokens}\` | **-${t.query_bpe_savings_pct}%** |\n` +
+                        `| **Query est. tokens** | \`${t.raw_bpe_tokens}\` | \`${t.optimized_bpe_tokens}\` | **-${t.query_bpe_savings_pct}%** |\n` +
                         `| **Workspace Context** | \`${t.raw_context_tokens} toks (${t.total_context_chunks} chunks)\` | \`${t.pruned_context_tokens} toks (chunks ${JSON.stringify(t.kept_context_indices)})\` | **-${t.context_token_savings_pct}%** |\n` +
                         `| **Tool Schemas** | \`${t.raw_tools_tokens} toks\` | \`${t.compressed_tools_tokens} toks (${JSON.stringify(t.injected_tool_ids)})\` | **Saved ${t.tool_schema_tokens_saved} toks** |\n` +
-                        `| **Full Agent Payload** | \`${t.unoptimized_payload_token_count} toks\` | \`${t.compiled_payload_token_count} toks\` | **-${t.payload_token_savings_pct}%** |\n\n` +
+                        `| **Payload vs modeled unpruned template** | \`${t.unoptimized_payload_token_count} toks\` | \`${t.compiled_payload_token_count} toks\` | **-${t.payload_token_savings_pct}%** |\n\n` +
                         `- **Intent:** \`${t.detected_intent}\` (conf: \`${t.intent_confidence}\`, intensity: \`${t.compression_intensity_used}\`)\n` +
                         `- **Stripped Filler:** \`${JSON.stringify(t.stripped_tokens)}\` | **Protected Negations:** \`${JSON.stringify(t.negations)}\`\n` +
                         `- **Cache:** \`${t.cache_hit ? t.cache_type : 'MISS'}\` | **Latency:** \`${t.latency_ms} ms\`\n\n` +
@@ -1129,8 +1129,8 @@ export function activate(context: vscode.ExtensionContext) {
                     `### ContextGate A/B Downstream Agent Comparison (\`${cmp.backend}\`)\n\n` +
                     `| Metric | Raw Unoptimized Prompt | ContextGate Compiled Prompt | Delta |\n` +
                     `| :--- | :--- | :--- | :--- |\n` +
-                    `| **Query Words / BPE** | \`${t.raw_token_count}w (${t.raw_bpe_tokens} BPE)\` | \`${t.optimized_token_count}w (${t.optimized_bpe_tokens} BPE)\` | **-${t.query_token_savings_pct}% words** |\n` +
-                    `| **Full Payload Tokens** | \`${cmp.raw_input_tokens}\` | \`${cmp.optimized_input_tokens}\` | **-${t.payload_token_savings_pct}%** |\n` +
+                    `| **Query words / est. tokens** | \`${t.raw_token_count}w (${t.raw_bpe_tokens} est.)\` | \`${t.optimized_token_count}w (${t.optimized_bpe_tokens} est.)\` | **-${t.query_token_savings_pct}% words** |\n` +
+                    `| **Payload est. tokens** | \`${cmp.raw_input_tokens}\` | \`${cmp.optimized_input_tokens}\` | **-${t.payload_token_savings_pct}%** |\n` +
                     `| **Downstream LLM Latency** | \`${cmp.raw_llm_latency_ms} ms\` | \`${cmp.optimized_llm_latency_ms} ms\` | Optimizer took \`${t.latency_ms} ms\` |\n` +
                     `| **Deterministic Audit Score** | \`${rawScore}/100\` | **\`${optScore}/100\`** | **+${optScore - rawScore} pts** |\n\n` +
                     `#### 1. Optimized Agent Response (Score: \`${optScore}/100\`)\n${cmp.optimized_response}\n\n` +
@@ -1192,8 +1192,8 @@ function renderSideBySideWebview(rawPrompt: string, cmp: BridgeResponse) {
 <body>
   <h2>Raw vs. Optimized Downstream Agent Comparison (${escapeHtml(cmp.backend || '')})</h2>
   <div class="top-grid">
-    <div class="card"><div class="label">Query Words / BPE</div><div class="metric">${t.raw_token_count}w &rarr; ${t.optimized_token_count}w (-${t.query_token_savings_pct}%)</div></div>
-    <div class="card"><div class="label">Payload Token Reduction</div><div class="metric">${cmp.raw_input_tokens} &rarr; ${cmp.optimized_input_tokens} (-${t.payload_token_savings_pct}%)</div></div>
+    <div class="card"><div class="label">Query words / est. tokens</div><div class="metric">${t.raw_token_count}w &rarr; ${t.optimized_token_count}w (-${t.query_token_savings_pct}%)</div></div>
+    <div class="card"><div class="label">Payload reduction (vs modeled baseline)</div><div class="metric">${cmp.raw_input_tokens} &rarr; ${cmp.optimized_input_tokens} (-${t.payload_token_savings_pct}%)</div></div>
     <div class="card"><div class="label">Compliance Score (Raw vs Opt)</div><div class="metric">${cmp.raw_audit?.compliance_score ?? 0}/100 &rarr; ${cmp.optimized_audit?.compliance_score ?? 100}/100</div></div>
     <div class="card"><div class="label">Optimizer Overhead</div><div class="metric">${t.latency_ms} ms (${t.cache_hit ? t.cache_type : 'LIVE'})</div></div>
   </div>
