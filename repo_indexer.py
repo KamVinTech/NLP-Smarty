@@ -912,6 +912,151 @@ def find_symbol(root: str, name: str, limit: int = 10, con: sqlite3.Connection |
     return out
 
 
+MAX_SCAN_FILES = 5000
+_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
+
+
+def find_references(root: str, name: str, limit: int = 40, token_budget: int = 700, include_tests: bool = True,
+                    con: sqlite3.Connection | None = None) -> dict[str, Any]:
+    """Where is `name` used? Definitions first, then callers (call-graph), then other whole-word mentions as file:line
+    snippets (code before tests before docs), all within a token budget. A grep replacement that is ranked, deduped and
+    bounded. `name` may be dotted ('BasePage.click'); mentions are matched on the last part, definitions on the full name."""
+    root = os.path.abspath(root)
+    parts = name.strip().split(".")
+    simple = parts[-1]
+    if not _IDENT_RE.fullmatch(simple) or not all(_IDENT_RE.fullmatch(x) for x in parts):
+        raise ValueError("name must be an identifier such as 'click' or 'BasePage.click'")
+    own = con is None
+    con = con or _connect(root)
+    refresh(root, con)
+    dotted = len(parts) > 1
+    defs = [dict(r) for r in con.execute(
+        "SELECT path,name,kind,start,end,sig FROM symbols WHERE name=? OR (? = 0 AND name LIKE ? ESCAPE '\\') "
+        "ORDER BY path,start", (name.strip(), int(dotted), "%." + simple.replace("_", r"\_")))]
+    def_ids = {(d["path"], d["start"]) for d in defs}
+    pat = re.compile(r"(?<![\w$])" + re.escape(simple) + r"(?![\w$])")
+    paths = [r["path"] for r in con.execute("SELECT path FROM files ORDER BY path")][:MAX_SCAN_FILES]
+
+    def bucket(path: str) -> int:
+        if path.lower().endswith(".md"):
+            return 2
+        return 1 if _TEST_PATH_RE.search(path) else 0
+    call_pat = re.compile(r"(?<![\w$])" + re.escape(simple) + r"\s*\(")
+    quoted_pat = re.compile(r"""['"`]""" + re.escape(simple) + r"""['"`]""")
+
+    def form(line: str) -> int:
+        """0 call site, 1 other code, 2 string literal, 3 comment: real usages first."""
+        if re.match(r"\s*(//|/\*|\*|#)", line):
+            return 3
+        if call_pat.search(line):
+            return 0
+        return 2 if quoted_pat.search(line) else 1
+    cls_pat = re.compile(r"(?<![\w$])" + re.escape(parts[-2]) + r"(?![\w$])") if dotted else None
+    knows: dict[str, bool] = {}  # for 'Class.method': files that mention Class are far likelier to be real usages
+    mentions: list[tuple[int, str, int, str, int]] = []
+    for path in paths:
+        if not include_tests and _TEST_PATH_RE.search(path):
+            continue
+        try:
+            with open(os.path.join(root, path), encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            continue
+        if not pat.search(text):
+            continue
+        knows[path] = bool(cls_pat and cls_pat.search(text))
+        for i, line in enumerate(text.split("\n"), 1):
+            if (path, i) not in def_ids and pat.search(line):
+                mentions.append((bucket(path), path, i, redact_secrets(line.strip())[:140], form(line)))
+    best = {}  # a file is ranked by its best usage; inside a file the best usages come first
+    for b, pth, _, _, f in mentions:
+        best[pth] = min(best.get(pth, 9), f)
+    mentions.sort(key=lambda m: (m[0], 0 if (not dotted or knows.get(m[1])) else 1, best[m[1]], m[1], m[4], m[2]))
+    # Callers = the innermost symbol around each code usage (calls and other code, not strings/comments). Derived from the
+    # usage lines rather than the stored call lists, which drop common names (warn/log/error) and over-credit containers.
+    spans: dict[str, list] = {}
+    for pth in {m[1] for m in mentions}:
+        spans[pth] = [dict(r) for r in con.execute("SELECT name,kind,start,end FROM symbols WHERE path=?", (pth,))]
+    found: dict[tuple, dict] = {}
+    for _, pth, ln, _snip, fm in mentions:
+        if fm > 1 or pth.lower().endswith(".md"):
+            continue  # strings/comments and prose are mentions, not callers
+        around = [x for x in spans[pth] if x["start"] <= ln <= x["end"]]
+        if not around:
+            continue
+        inner = min(around, key=lambda x: (x["end"] - x["start"], x["start"]))
+        if (pth, inner["start"]) in def_ids:
+            continue  # the usage is inside the definition itself (e.g. the method delegating to locator.click)
+        key = (pth, inner["name"], inner["start"])
+        c = found.setdefault(key, {"path": pth, "name": inner["name"], "kind": inner["kind"], "start": inner["start"],
+                                   "end": inner["end"], "lines": 0})
+        c["lines"] += 1
+    callers = list(found.values())
+    if not include_tests:
+        callers = [c for c in callers if not _TEST_PATH_RE.search(c["path"])]
+    callers.sort(key=lambda c: (bucket(c["path"]), c["path"], c["start"]))
+    if own:
+        con.close()
+    counts = {"definitions": len(defs), "callers": len(callers), "mentions": len(mentions)}
+
+    out: list[str] = []
+    used = 0
+
+    def emit(line: str) -> bool:
+        nonlocal used
+        c = est_tokens(line) + 1
+        if used + c > token_budget and out:
+            return False
+        out.append(line)
+        used += c
+        return True
+    truncated = False
+    exhausted = False
+    if defs:
+        emit("definitions:")
+        for d in defs:
+            exhausted = exhausted or not emit(f"- {d['path']}:L{d['start']}-{d['end']} {d['kind']} {d['name']}")
+    else:
+        emit(f"definitions: none indexed for '{name}'")
+    MAX_CALLERS = 8  # callers are structure; the line-level mentions below are the substance, so keep callers short
+    if callers and not exhausted:
+        shown_c = callers[:MAX_CALLERS]
+        emit(f"callers (showing {len(shown_c)} of {len(callers)}):" if len(callers) > MAX_CALLERS else f"callers ({len(callers)}):")
+        for c in shown_c:
+            if not emit(f"- {c['path']}:L{c['start']}-{c['end']} {c['name']}"):
+                exhausted = True
+                break
+        truncated |= len(callers) > MAX_CALLERS
+    if mentions and not exhausted:
+        emit(f"mentions ({len(mentions)}):")
+        by_file: dict[str, list] = {}
+        for m in mentions:  # already ranked: files by relevance, lines inside a file best-usage first
+            by_file.setdefault(m[1], []).append(m)
+        shown = 0
+        for path, ms in by_file.items():
+            if shown >= limit:
+                break
+            if not emit(f"{path}:"):
+                exhausted = True
+                break
+            # pick the best usages first (<=4 per file so one noisy file can't eat the budget, and never more than the
+            # global limit), THEN show them in line order
+            chosen = sorted(ms[:min(4, limit - shown)], key=lambda m: m[2])
+            for _, _, ln, snippet, _f in chosen:
+                if not emit(f"  L{ln}: {snippet}"):
+                    exhausted = True
+                    break
+                shown += 1
+            if exhausted:
+                break
+        truncated |= shown < len(mentions)
+    truncated |= exhausted
+    if truncated:
+        out.append("... (truncated; narrow the name, set include_tests=false, or use smarty_get_slice)")
+    return {"text": "\n".join(out), "counts": counts, "truncated": truncated, "tokens": est_tokens("\n".join(out)),
+            "definitions": defs, "callers": callers}
+
+
 def repo_map(root: str, token_budget: int = 800) -> str:
     """Compact file -> top-level symbols map (modified files first). Stops at the token budget."""
     root = os.path.abspath(root)

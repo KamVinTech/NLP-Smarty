@@ -22,6 +22,23 @@ from protocol import ProtocolError, validate_request
 SERVER_INFO = {"name": "nlp-smarty", "version": "0.6.0"}
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
+# Sent once per session in the initialize result; the client adds it to the agent's context. Keep it short: it is paid
+# on every session. The "nlp-smarty index:" prefix is a marker that ab_compare.py uses to confirm delivery.
+INSTRUCTIONS = (
+    "nlp-smarty index: this repo's symbols are indexed with exact line spans. To locate code, call smarty_get_context "
+    "(describe the task) or smarty_find_symbol (a name); for usages call smarty_find_references; then smarty_get_slice "
+    "to read only the lines you need. A <retrieved_context> block may already be in your prompt; use these tools for "
+    "what it does not cover. Results are lexical and can be incomplete: fall back to grep if they come back empty."
+)
+
+
+def server_instructions() -> str | None:
+    """OFF by default: in a 5-run live test the agent never used the tools even with these instructions (it never loaded
+    the deferred tools), so they only cost ~100 tokens per session. Opt in with SMARTY_MCP_INSTRUCTIONS=on|1|true."""
+    if os.environ.get("SMARTY_MCP_INSTRUCTIONS", "off").strip().lower() in ("on", "1", "true", "yes"):
+        return INSTRUCTIONS
+    return None
+
 _PIPELINE_PROPS: dict[str, Any] = {
     "text": {"type": "string", "description": "Raw prompt / task text."},
     "context_chunks": {"type": "array", "items": {"type": "string"}, "description": "RAG chunks to prune via MMR."},
@@ -139,6 +156,20 @@ def _tool_find_symbol(args: dict[str, Any]) -> Any:
     return {"matches": ri.find_symbol(_root(), n, _int(args, "limit", 10, 1, 50))}
 
 
+def _tool_find_references(args: dict[str, Any]) -> Any:
+    n = args.get("name")
+    if not isinstance(n, str) or not n.strip():
+        raise ProtocolError("INVALID_REQUEST", "'name' must be a non-empty string")
+    inc = args.get("include_tests", True)
+    if not isinstance(inc, bool):
+        raise ProtocolError("INVALID_REQUEST", "'include_tests' must be a boolean")
+    try:
+        out = ri.find_references(_root(), n, _int(args, "limit", 40, 1, 200), _int(args, "token_budget", 700, 100, 4000), inc)
+    except ValueError as exc:
+        raise ProtocolError("INVALID_REQUEST", str(exc))
+    return {"text": out["text"], "counts": out["counts"], "truncated": out["truncated"]}
+
+
 def _tool_get_slice(args: dict[str, Any]) -> Any:
     path = args.get("path")
     if not isinstance(path, str) or not path:
@@ -170,6 +201,13 @@ TOOLS.update({
         "description": "Locate a symbol by name (exact, prefix, or Class.method suffix); returns path and line span.",
         "inputSchema": _obj({"name": {"type": "string"}, "limit": {"type": "integer"}}, ["name"]),
     }, _tool_find_symbol),
+    "smarty_find_references": ({
+        "name": "smarty_find_references",
+        "description": "Where a symbol is used: definitions, then callers, then other mentions as file:line, ranked and "
+                       "token-budgeted. Use instead of grep to find usages.",
+        "inputSchema": _obj({"name": {"type": "string"}, "limit": {"type": "integer"}, "token_budget": {"type": "integer"},
+                             "include_tests": {"type": "boolean"}}, ["name"]),
+    }, _tool_find_references),
     "smarty_get_slice": ({
         "name": "smarty_get_slice",
         "description": "Numbered lines start..end (max 400) of a workspace file; secrets redacted.",
@@ -200,8 +238,13 @@ def handle_message(msg: Any) -> dict[str, Any] | None:
     if method == "initialize":
         requested = params.get("protocolVersion")
         version = requested if requested in SUPPORTED_PROTOCOLS else SUPPORTED_PROTOCOLS[0]
-        return ok({"protocolVersion": version, "capabilities": {"tools": {"listChanged": False}, "resources": {}},
-                   "serverInfo": SERVER_INFO})
+        result: dict[str, Any] = {"protocolVersion": version,
+                                  "capabilities": {"tools": {"listChanged": False}, "resources": {}},
+                                  "serverInfo": SERVER_INFO}
+        instructions = server_instructions()
+        if instructions:
+            result["instructions"] = instructions
+        return ok(result)
     if method == "ping":
         return ok({})
     if method == "resources/list":

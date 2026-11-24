@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 from mcp_server import handle_message
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -100,3 +102,53 @@ def test_resources(monkeypatch, tmp_path):
     assert rpc("resources/list")["result"]["resources"][0]["uri"] == "smarty://repo_map"
     assert "a.py" in rpc("resources/read", {"uri": "smarty://repo_map"})["result"]["contents"][0]["text"]
     assert rpc("resources/read", {"uri": "smarty://nope"})["error"]
+
+
+# ── server instructions (opt-in) ──────────────────────────────────────────────
+def test_instructions_are_off_by_default(monkeypatch):
+    monkeypatch.delenv("SMARTY_MCP_INSTRUCTIONS", raising=False)
+    result = rpc("initialize", {"protocolVersion": "2025-06-18"})["result"]
+    assert "instructions" not in result and result["serverInfo"]["name"] == "nlp-smarty"
+
+
+@pytest.mark.parametrize("value", ["on", "1", "true", "YES", " On "])
+def test_instructions_opt_in_are_short_and_accurate(monkeypatch, value):
+    monkeypatch.setenv("SMARTY_MCP_INSTRUCTIONS", value)
+    import re
+
+    import repo_indexer as ri
+    from mcp_server import INSTRUCTIONS, TOOLS
+
+    text = rpc("initialize", {"protocolVersion": "2025-06-18"})["result"]["instructions"]
+    assert text == INSTRUCTIONS and text.startswith("nlp-smarty index:")
+    assert ri._heuristic_tokens(text) <= 125  # paid on every session when enabled: keep it small
+    named = set(re.findall(r"smarty_[a-z_]+", text))
+    assert named and named <= set(TOOLS), f"instructions mention tools that do not exist: {named - set(TOOLS)}"
+    assert "smarty_find_references" in named and "grep" in text and "retrieved_context" in text
+
+
+@pytest.mark.parametrize("value", ["off", "0", "false", "NO", "", "maybe"])
+def test_anything_else_keeps_instructions_off(monkeypatch, value):
+    monkeypatch.setenv("SMARTY_MCP_INSTRUCTIONS", value)
+    assert "instructions" not in rpc("initialize", {})["result"]
+
+
+def test_instructions_over_stdio():
+    env = {**os.environ, "SMARTY_MCP_INSTRUCTIONS": "on"}
+    p = subprocess.run([sys.executable, os.path.join(ROOT, "mcp_server.py")], cwd=ROOT, env=env, capture_output=True,
+                       text=True, timeout=60, input=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}) + "\n")
+    assert json.loads(p.stdout.splitlines()[0])["result"]["instructions"].startswith("nlp-smarty index:")
+
+
+# ── smarty_find_references ────────────────────────────────────────────────────
+def test_find_references_tool(monkeypatch, tmp_path):
+    (tmp_path / "core.py").write_text("def charge(amount):\n    return amount\n")
+    (tmp_path / "api.py").write_text("from core import charge\n\ndef checkout(a):\n    return charge(a)\n")
+    monkeypatch.setenv("SMARTY_ROOT", str(tmp_path))
+    assert "smarty_find_references" in {t["name"] for t in rpc("tools/list")["result"]["tools"]}
+    err, out = _call("smarty_find_references", {"name": "charge"})
+    assert not err and out["counts"]["definitions"] == 1 and out["counts"]["callers"] == 1
+    assert "api.py" in out["text"] and "checkout" in out["text"] and out["truncated"] is False
+    for bad in ({"name": ""}, {"name": "a b"}, {"name": "x", "include_tests": "yes"}, {"name": "x", "token_budget": 5}):
+        err, out = _call("smarty_find_references", bad)
+        assert err and out["error_code"] == "INVALID_REQUEST"

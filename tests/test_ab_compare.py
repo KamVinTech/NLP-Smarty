@@ -248,3 +248,115 @@ def test_cli_per_prompt(two_task_transcript, capsys):
     assert ab.main(["transcripts", "--per-prompt", "--a", two_task_transcript, "--b", two_task_transcript]) == 0
     out = capsys.readouterr().out
     assert "== task 1" in out and "== task 2" in out and "whole-session totals" in out
+
+
+def test_transcript_detects_delivered_mcp_instructions(tmp_path):
+    p = tmp_path / "i.jsonl"
+    with_instr = _line(type="attachment", attachment={"type": "mcp_instructions_delta", "added": [
+        {"server": "nlp-smarty", "text": "nlp-smarty index: this repo's symbols are indexed"}]})
+    other = _line(type="attachment", attachment={"type": "mcp_instructions_delta", "added": [
+        {"server": "easel", "text": "charts"}]})
+    p.write_text(other + "\n" + _assistant("m1") + "\n")
+    assert ab.analyze_transcript(str(p))["smarty_instructions_seen"] == 0
+    p.write_text(other + "\n" + with_instr + "\n" + _assistant("m1") + "\n")
+    assert ab.analyze_transcript(str(p))["smarty_instructions_seen"] == 1
+
+
+# ── inspect + smarty-vs-smarty ────────────────────────────────────────────────
+def _session(path, hook=False, instr=False, tool=None, task="fix the thing"):
+    lines = [_prompt(task)]
+    if hook:
+        lines.append(_line(type="attachment", attachment={"type": "hook_additional_context",
+                                                          "content": "<retrieved_context>x</retrieved_context>"}))
+    if instr:
+        lines.append(_line(type="attachment", attachment={"type": "mcp_instructions_delta",
+                                                          "added": [{"text": "nlp-smarty index: use tools"}]}))
+    if tool:
+        lines += [_assistant("m1", tool, "t1"), _result("t1", "{}")]
+    lines += [_assistant("m2", "Edit", "t2"), _result("t2", "ok")]
+    path.write_text("\n".join(lines) + "\n")
+    return str(path)
+
+
+def test_guess_arm_and_tools_used(tmp_path):
+    a = ab.analyze_transcript(_session(tmp_path / "a.jsonl"))
+    b = ab.analyze_transcript(_session(tmp_path / "b.jsonl", hook=True))
+    c = ab.analyze_transcript(_session(tmp_path / "c.jsonl", hook=True, instr=True, tool="mcp__nlp-smarty__smarty_get_context"))
+    assert [ab.guess_arm(x) for x in (a, b, c)] == ["A", "B", "C"]
+    assert c["smarty_tools_used"] == ["smarty_get_context"] and a["smarty_tools_used"] == []
+
+
+def test_inspect_cli(tmp_path, capsys):
+    d = tmp_path / "proj"
+    d.mkdir()
+    _session(d / "1.jsonl", hook=True, instr=True, tool="mcp__nlp-smarty__smarty_find_symbol")
+    assert ab.main(["inspect", str(d)]) == 0
+    out = capsys.readouterr().out
+    assert " C " in out and "smarty_find_symbol" in out and "'fix the thing'" in out
+    assert ab.main(["inspect", str(tmp_path / "nope")]) == 2
+
+
+def test_smarty_vs_smarty_validity_warnings(tmp_path, capsys):
+    hook_only = _session(tmp_path / "h.jsonl", hook=True)
+    with_instr = _session(tmp_path / "i.jsonl", hook=True, instr=True, tool="mcp__nlp-smarty__smarty_get_context")
+    ab.main(["transcripts", "--smarty-vs-smarty", "--a", hook_only, "--b", with_instr])
+    out = capsys.readouterr().out
+    assert "WARNING" not in out.replace("fewer than 3 runs", "") .split("A (baseline)")[1].split("metric")[0]
+    assert "called in 1/1 instruction-arm runs" in out
+    ab.main(["transcripts", "--smarty-vs-smarty", "--a", with_instr, "--b", hook_only])  # swapped: both mistakes flagged
+    out = capsys.readouterr().out
+    assert "not hook-only" in out and "did not receive" not in out and "not every --b run received" in out
+
+
+def test_empty_dirs_are_tolerated_when_others_have_sessions(tmp_path, transcript):
+    full, empty = tmp_path / "full", tmp_path / "empty"
+    full.mkdir()
+    empty.mkdir()
+    (full / "s.jsonl").write_text(open(transcript).read())
+    assert len(ab.expand_inputs([str(empty), str(full)])) == 1  # shell globs often include an empty project dir
+    with pytest.raises(ab.InputError, match="no .jsonl"):
+        ab.expand_inputs([str(empty)])
+
+
+def test_match_selects_project_dirs_without_shell_globs(tmp_path, transcript, monkeypatch):
+    root = tmp_path / "projects"
+    for name in ("-Users-x-NexusAI-smarty-c", "-Users-x-NexusAI-smarty-c--claude-worktrees-w1", "-Users-x-Other"):
+        (root / name).mkdir(parents=True)
+        (root / name / "s.jsonl").write_text(open(transcript).read())
+    monkeypatch.setattr(ab, "PROJECTS_DIR", str(root))
+    got = ab.expand_inputs([], match="NexusAI-smarty-c")
+    assert len(got) == 2 and all("Other" not in g for g in got)  # main project dir and its worktree dir, not the others
+    with pytest.raises(ab.InputError, match="yet"):
+        ab.expand_inputs([], match="NexusAI-not-run-yet")  # the exact situation: no session has run in that folder
+    with pytest.raises(ab.InputError, match="--match"):
+        ab.expand_inputs([])
+
+
+def test_cli_match_options(tmp_path, transcript, monkeypatch, capsys):
+    root = tmp_path / "projects"
+    (root / "-p-armA").mkdir(parents=True)
+    (root / "-p-armB").mkdir(parents=True)
+    (root / "-p-armA" / "s.jsonl").write_text(open(transcript).read())
+    (root / "-p-armB" / "s.jsonl").write_text(open(transcript).read())
+    monkeypatch.setattr(ab, "PROJECTS_DIR", str(root))
+    assert ab.main(["inspect", "--match", "armA"]) == 0
+    assert ab.main(["transcripts", "--a-match", "armA", "--b-match", "armB"]) == 0
+    assert ab.main(["inspect", "--match", "missing"]) == 2
+    assert "no Claude Code project directory matching 'missing'" in capsys.readouterr().err
+
+
+def test_by_arm_groups_sessions_by_content_not_folder(tmp_path, capsys, monkeypatch):
+    root = tmp_path / "projects"
+    d = root / "-same-repo-root-for-everything"  # the app names project dirs after the repo root: one dir holds all arms
+    d.mkdir(parents=True)
+    _session(d / "a.jsonl")
+    _session(d / "b.jsonl", hook=True)
+    _session(d / "c1.jsonl", hook=True, instr=True, tool="mcp__nlp-smarty__smarty_get_context")
+    _session(d / "c2.jsonl", hook=True, instr=True)
+    monkeypatch.setattr(ab, "PROJECTS_DIR", str(root))
+    assert ab.main(["transcripts", "--by-arm", "B", "C", "--match", "same-repo"]) == 0
+    out = capsys.readouterr().out
+    assert "A=1 B=1 C=2" in out and "A (baseline) n=1   B (smarty) n=2" in out
+    assert "called in 1/2 instruction-arm runs" in out  # smarty-vs-smarty semantics applied automatically
+    assert ab.main(["transcripts", "--by-arm", "A", "B", "--match", "same-repo"]) == 0
+    assert ab.main(["transcripts", "--by-arm", "A", "A", "--match", "same-repo"]) == 0  # degenerate but not a crash

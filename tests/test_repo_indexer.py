@@ -434,3 +434,98 @@ def test_path_like_words_do_not_trigger_test_intent(tmp_path):
 
 def test_default_floor_blocks_weak_matches():
     assert ri.MIN_CONFIDENCE == 0.34
+
+
+# ── find_references ───────────────────────────────────────────────────────────
+REFS = {
+    "core.py": "def charge(amount):\n    return amount\n\n\nclass Billing:\n    def pay(self, amount):\n        return charge(amount)\n",
+    "api.py": "from core import charge\n\n\ndef checkout(a):\n    # charge the card\n    return charge(a)\n\n\nLABEL = 'charge'\n",
+    "tests/test_core.py": "from core import charge\n\n\ndef test_charge():\n    assert charge(1) == 1\n",
+    "docs.md": "# Billing\nCall charge() to bill.\n",
+    "other.py": "def recharge(x):\n    return x\n\n\ncharger = 1\n",
+}
+
+
+def test_find_references_ranks_definitions_callers_then_mentions(tmp_path):
+    out = ri.find_references(_mk(tmp_path, REFS), "charge", token_budget=2000)
+    assert [d["path"] for d in out["definitions"]] == ["core.py"] and out["definitions"][0]["kind"] == "function"
+    names = [c["name"] for c in out["callers"]]
+    assert names == ["checkout", "Billing.pay", "test_charge"] or set(names) == {"checkout", "Billing.pay", "test_charge"}
+    assert names.index("test_charge") == len(names) - 1  # code callers before test callers
+    t = out["text"]
+    assert t.index("definitions:") < t.index("callers") < t.index("mentions")
+    assert t.index("api.py:") < t.index("tests/test_core.py:") < t.index("docs.md:")  # code, then tests, then docs
+    assert "recharge" not in t and "charger" not in t  # whole-word matching only
+    assert "def charge" not in t.split("mentions")[1]  # the definition line is not repeated as a mention
+    assert out["counts"]["definitions"] == 1 and not out["truncated"]
+
+
+def test_find_references_prefers_call_sites_over_strings_and_comments(tmp_path):
+    out = ri.find_references(_mk(tmp_path, REFS), "charge", token_budget=2000)
+    lines = out["text"].split("mentions")[1].split("\n")
+    start = lines.index("api.py:") + 1  # this file's block inside the mentions section
+    shown = []
+    for l in lines[start:]:
+        if not l.startswith("  L"):
+            break
+        shown.append(l.strip())
+    api = "\n".join(shown)
+    assert shown == sorted(shown, key=lambda l: int(l[1:].split(":")[0]))  # displayed in line order
+    assert any("return charge(a)" in l for l in shown) and any("# charge the card" in l for l in shown)
+    assert any("LABEL" in l for l in shown)
+    # ranking: with a 1-line-per-file cap the call site (not the comment or the string literal) is the one that survives
+    ranked = ri.find_references(_mk(tmp_path / "r", {"api.py": REFS["api.py"]}), "charge", limit=1, token_budget=2000)["text"]
+    assert "return charge(a)" in ranked and "# charge the card" not in ranked and "LABEL" not in ranked
+
+
+def test_find_references_budget_include_tests_and_limit(tmp_path):
+    root = _mk(tmp_path, {**REFS, **{f"m{i}.py": f"from core import charge\nx{i} = charge({i})\n" for i in range(40)}})
+    small = ri.find_references(root, "charge", token_budget=100)
+    assert small["truncated"] and small["tokens"] <= 140 and "truncated" in small["text"]
+    no_tests = ri.find_references(root, "charge", include_tests=False, token_budget=4000)
+    assert "tests/test_core.py" not in no_tests["text"] and "test_charge" not in no_tests["text"]  # not even as a caller
+    assert no_tests["counts"]["mentions"] < \
+        ri.find_references(root, "charge", token_budget=4000)["counts"]["mentions"]
+    few = ri.find_references(root, "charge", limit=3, token_budget=4000)
+    assert sum(1 for l in few["text"].split("\n") if l.startswith("  L")) == 3 and few["truncated"]
+
+
+def test_find_references_dotted_names_and_class_context(tmp_path):
+    root = _mk(tmp_path, {
+        "page.py": "class Base:\n    def click(self):\n        return 1\n",
+        "login.py": "from page import Base\n\n\nclass Login(Base):\n    def go(self):\n        return self.click()\n",
+        "noise.py": "def helper(page):\n    return page.click()\n",
+    })
+    out = ri.find_references(root, "Base.click", token_budget=2000)
+    assert [d["name"] for d in out["definitions"]] == ["Base.click"]
+    t = out["text"]
+    assert t.index("login.py:") < t.index("noise.py:")  # files that mention Base outrank lexical lookalikes
+
+
+def test_find_references_innermost_callers_only_and_no_container_of_the_definition(tmp_path):
+    ts = ("export class Svc {\n  run() {\n    return helper(1);\n  }\n  helper2() {\n    return 2;\n  }\n}\n\n"
+          "export function helper(x: number) {\n  return x;\n}\n")
+    out = ri.find_references(_mk(tmp_path, {"svc.ts": ts}), "helper")
+    assert [c["name"] for c in out["callers"]] == ["Svc.run"]  # not the enclosing class Svc as well
+    holder = ("export class Base {\n  click() {\n    return locator.click();\n  }\n}\n")
+    out = ri.find_references(_mk(tmp_path / "x", {"base.ts": holder}), "Base.click")
+    assert out["callers"] == []  # the class around the definition is not a caller of it
+
+
+def test_find_references_validation_and_redaction(tmp_path):
+    root = _mk(tmp_path, {"a.py": "def f(x):\n    return x\n\n\nf('sk-abcdefghijklmnopqrstuvwxyz123456')\n"})
+    for bad in ("", "a b", "1x", "x;y", "a..b"):
+        with pytest.raises(ValueError):
+            ri.find_references(root, bad)
+    out = ri.find_references(root, "f")
+    assert "sk-abcdef" not in out["text"] and "[REDACTED]" in out["text"]
+
+
+def test_find_references_callers_come_from_usages_not_stored_call_lists(tmp_path):
+    """Regression: stored call lists drop common names (warn/log/error), so callers of `warn` were always empty."""
+    ts = ("export class Logger {\n  warn(m: string) {\n    return m;\n  }\n}\n\n"
+          "export class Svc {\n  run() {\n    logger.warn('x');\n    return 1;\n  }\n}\n")
+    out = ri.find_references(_mk(tmp_path, {"app.ts": ts}), "Logger.warn")
+    assert [c["name"] for c in out["callers"]] == ["Svc.run"]
+    assert ri.find_references(_mk(tmp_path / "d", {"d.md": "# Heading\nCall charge() here.\n", "a.py": "def charge():\n    pass\n"}),
+                              "charge")["callers"] == []  # prose never makes a heading a caller

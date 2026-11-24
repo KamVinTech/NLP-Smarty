@@ -441,6 +441,6 @@ python smarty_cli.py uninstall [--purge]     # remove only what init added
 
 - Hooks go to `.claude/settings.local.json` (machine-specific, git-excluded); use `--scope project` to share them.
 - `init` is idempotent, merges into existing JSON (aborts on unparseable files), and keeps one-time backups in `.smarty/backups/`.
-- MCP tools: `smarty_get_context`, `smarty_find_symbol`, `smarty_repo_map`, `smarty_get_slice` (+ the original optimizer tools).
+- MCP tools: `smarty_get_context`, `smarty_find_symbol`, `smarty_find_references` (definitions, callers and ranked, token-budgeted usages), `smarty_repo_map`, `smarty_get_slice` (+ the original optimizer tools). The server's agent-facing instructions are **off by default** (a live test showed the agent never used the tools even with them); opt in with `SMARTY_MCP_INSTRUCTIONS=on` in the `env` of `.mcp.json`.
 - Measure retrieval quality: `python eval_retrieval.py --golden` (hand-labelled queries) or without flags (git history).
 - `pip install .` provides `smarty`, `smarty-mcp` and `smarty-hook` commands.
