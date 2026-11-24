@@ -1489,6 +1489,15 @@ def audit_agent_response(response_text: str, trace: OptimizationTrace) -> dict[s
 # ══════════════════════════════════════════════════════════════════════════════
 
 def optimize(request: RawRequest, few_shot_k: int = 2) -> CompiledPrompt:
+    """Compile a raw request into a strict XML prompt for a downstream agent (deterministic, no model call).
+
+    Runs the 9-step pipeline (budgeting, tool-schema compression, MMR/BM25 pruning of tools, examples, context and history,
+    lexical normalization, intent routing, cache) and returns a ``CompiledPrompt``: ``payload`` is the XML string, ``status`` is
+    ``"OK"``, ``"NEEDS_CLARIFICATION"`` (a required slot is missing: no model call is needed) or ``"INSUFFICIENT_CONTEXT"``,
+    and ``trace`` is an ``OptimizationTrace`` with per-step token estimates. ``trace.payload_token_savings_pct`` is measured against
+    a modeled unpruned template, not against the request you would otherwise have sent; short prompts compile to MORE tokens
+    than the raw text (see the README, "Measured results"). ``TokenBudget.max_total_tokens`` is advisory.
+    """
     t0 = time.perf_counter()
     trace = OptimizationTrace()
     budget = _resolve_budget(request)

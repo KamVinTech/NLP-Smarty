@@ -174,8 +174,26 @@ def verify(original: str, compressed: str) -> list[str]:
     return missing
 
 
-def gate_text(text: str, level: int) -> tuple[str, bool]:
-    """(text, ok): compressed text, or the ORIGINAL with ok=False if verification failed."""
+def gate_text(text: str, level: int | str = 1) -> tuple[str, bool]:
+    """Compress prose deterministically while keeping everything load-bearing verbatim.
+
+    ``level`` is the prose level 1-3 or a profile name (``"strict"`` = 1, ``"balanced"`` = 2, ``"aggressive"`` = 3).
+    Protected spans (code, URLs, emails, paths, identifiers, quoted strings, JSON, digit tokens, negation clauses) are never
+    altered and are re-verified afterwards.
+
+    Returns ``(text, ok)``. ``ok`` is False when verification failed or the input was pathological (work budget exceeded):
+    in that case ``text`` is the ORIGINAL, unchanged. The function never makes the text longer and never raises on odd input;
+    it raises ``ValueError`` only for an unknown ``level``.
+
+    >>> gate_text("Could you please basically fix `get_user()`, do not use recursion.", "balanced")
+    ('Fix `get_user()`, do not use recursion.', True)
+    """
+    if isinstance(level, str):
+        if level not in PROFILES:
+            raise ValueError(f"unknown profile {level!r}; choose from {', '.join(PROFILES)} or a level 1-3")
+        level = PROFILES[level].prose_level
+    if not isinstance(level, int) or isinstance(level, bool) or level not in (1, 2, 3):
+        raise ValueError(f"level must be 1, 2 or 3 (or a profile name), got {level!r}")
     if not text or not text.strip():
         return text, True
     try:
@@ -402,4 +420,11 @@ def detect_api(body: Any) -> str:
 
 
 def gate_request(body: dict, profile: Profile | str = "strict", api: str | None = None) -> GateResult:
+    """Gate a chat request body (OpenAI-compatible or Anthropic Messages; auto-detected unless ``api`` is ``"openai"``/``"anthropic"``).
+
+    Only user plain-text and tool-schema ``description`` strings are rewritten; everything else (system prompts, signed ``thinking``,
+    ``tool_use``/``tool_result``, ``cache_control``) is forwarded verbatim. Never raises: on any error ``result.body`` is the original
+    request and ``result.error`` names the failure. ``result.body`` is never larger than the input (``result.saved >= 0``).
+    ``result.applied`` says whether anything changed; token counts are estimates (``estimate_tokens``), not provider counts.
+    """
     return (gate_anthropic_request if (api or detect_api(body)) == "anthropic" else gate_openai_request)(body, profile)
