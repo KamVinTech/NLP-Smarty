@@ -27,7 +27,9 @@ DEFAULT_PATH = os.environ.get("SMARTY_LEDGER") or os.path.join(os.path.expanduse
 AUDIT_PASS = 80
 COLS = ("ts", "route", "host", "model", "profile", "stream", "applied", "raw_tokens", "fwd_tokens", "up_prompt_tokens",
         "up_completion_tokens", "gate_ms", "upstream_ms", "status", "fallbacks", "protected_ok", "error", "audit_score",
-        "neg_ok", "entity_ok")
+        "neg_ok", "entity_ok", "api", "up_cache_read_tokens", "up_cache_write_tokens")
+_ADDED_LATER = {"api": "TEXT", "up_cache_read_tokens": "INTEGER", "up_cache_write_tokens": "INTEGER"}  # migrated into old ledgers
+DEFAULT_CACHE_MULT = {"read": 0.10, "write": 1.25}  # multipliers on the input price: ASSUMPTIONS, override per model in --prices
 
 
 class Ledger:
@@ -47,7 +49,12 @@ class Ledger:
                 "CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY, ts REAL, route TEXT, host TEXT, model TEXT, "
                 "profile TEXT, stream INTEGER, applied INTEGER, raw_tokens INTEGER, fwd_tokens INTEGER, "
                 "up_prompt_tokens INTEGER, up_completion_tokens INTEGER, gate_ms REAL, upstream_ms REAL, status INTEGER, "
-                "fallbacks INTEGER, protected_ok INTEGER, error TEXT, audit_score INTEGER, neg_ok INTEGER, entity_ok INTEGER)")
+                "fallbacks INTEGER, protected_ok INTEGER, error TEXT, audit_score INTEGER, neg_ok INTEGER, entity_ok INTEGER, "
+                "api TEXT, up_cache_read_tokens INTEGER, up_cache_write_tokens INTEGER)")
+            have = {r[1] for r in self._db.execute("PRAGMA table_info(requests)")}
+            for col, typ in _ADDED_LATER.items():  # migrate ledgers created before these columns existed
+                if col not in have:
+                    self._db.execute(f"ALTER TABLE requests ADD COLUMN {col} {typ}")
             self._db.execute("CREATE INDEX IF NOT EXISTS requests_ts ON requests(ts)")
             self._db.execute("INSERT OR REPLACE INTO meta VALUES('schema', ?)", (str(SCHEMA),))
             self._db.commit()
@@ -118,6 +125,12 @@ def summarize(rows: list[Any], prices: dict | None = None) -> dict[str, Any]:
             ran = [r for r in aud if r[col] is not None]
             out[key] = round(sum(1 for r in ran if r[col] == 1) / len(ran), 4) if ran else None
             out[key.replace("pass_rate", "checked")] = len(ran)
+    cr = sum(r["up_cache_read_tokens"] or 0 for r in rows)
+    cw = sum(r["up_cache_write_tokens"] or 0 for r in rows)
+    if cr or cw:
+        total_prompt = out["upstream_prompt_tokens"]
+        out.update({"upstream_cache_read_tokens": cr, "upstream_cache_write_tokens": cw,
+                    "cache_read_share": round(cr / total_prompt, 4) if total_prompt else None})
     if prices:
         usd_saved = usd_spend = 0.0
         priced = unpriced = 0
@@ -128,19 +141,25 @@ def summarize(rows: list[Any], prices: dict | None = None) -> dict[str, Any]:
                 continue
             priced += 1
             k = ratio or 1.0
-            usd_saved += ((r["raw_tokens"] or 0) - (r["fwd_tokens"] or 0)) * k / 1e6 * p["input_per_mtok"]
+            prompt = r["up_prompt_tokens"] or 0
+            eff = 1.0  # saved tokens are assumed to have the cache mix this request actually had
+            if prompt and (r["up_cache_read_tokens"] or r["up_cache_write_tokens"]):
+                rd, wr = r["up_cache_read_tokens"] or 0, r["up_cache_write_tokens"] or 0
+                eff = ((prompt - rd - wr) + rd * p.get("cache_read_mult", DEFAULT_CACHE_MULT["read"])
+                       + wr * p.get("cache_write_mult", DEFAULT_CACHE_MULT["write"])) / prompt
+            usd_saved += ((r["raw_tokens"] or 0) - (r["fwd_tokens"] or 0)) * k * eff / 1e6 * p["input_per_mtok"]
             usd_spend += (r["up_prompt_tokens"] or 0) / 1e6 * p["input_per_mtok"] + \
                 (r["up_completion_tokens"] or 0) / 1e6 * p.get("output_per_mtok", 0)
-        out.update({"usd_input_saved_est": round(usd_saved, 4), "usd_spend_observed": round(usd_spend, 4),
+        out.update({"usd_input_saved_est": round(usd_saved, 6), "usd_spend_observed": round(usd_spend, 6),
                     "usd_priced_requests": priced, "usd_unpriced_requests": unpriced})
     by: dict[str, dict] = {}
-    for key in ("model", "profile"):
+    for key in ("model", "profile", "api"):
         grp: dict[str, list] = {}
         for r in rows:
             grp.setdefault(r[key] or "?", []).append(r)
         by[key] = {k: {"requests": len(v), "est_saved_pct": round(100 * (sum(x["raw_tokens"] or 0 for x in v) - sum(x["fwd_tokens"] or 0 for x in v))
                                                                   / max(1, sum(x["raw_tokens"] or 0 for x in v)), 2)} for k, v in grp.items()}
-    out["by_model"], out["by_profile"] = by["model"], by["profile"]
+    out["by_model"], out["by_profile"], out["by_api"] = by["model"], by["profile"], by["api"]
     return out
 
 
@@ -155,9 +174,13 @@ def format_summary(s: dict[str, Any]) -> str:
                  f"~{s['calibrated_tokens_saved']} provider tokens saved")
     else:
         L.append("calibration: no upstream usage seen yet (savings above are estimator-only)")
+    if s.get("cache_read_share") is not None:
+        L.append(f"provider cache: {100 * s['cache_read_share']:.1f}% of prompt tokens were cache reads "
+                 f"({s['upstream_cache_read_tokens']} read, {s['upstream_cache_write_tokens']} written)")
     if "usd_input_saved_est" in s:
-        L.append(f"USD (your price table; estimate, ignores cache discounts): ~${s['usd_input_saved_est']} input saved of "
-                 f"${s['usd_spend_observed']} observed spend ({s['usd_priced_requests']} priced, {s['usd_unpriced_requests']} unpriced requests)")
+        L.append(f"USD (your price table; estimate, saved tokens priced at the cache mix actually observed): ~${s['usd_input_saved_est']:.6f} "
+                 f"input saved of ${s['usd_spend_observed']:.6f} observed spend ({s['usd_priced_requests']} priced, {s['usd_unpriced_requests']} unpriced requests; "
+                 f"cache read/write multipliers assumed x{DEFAULT_CACHE_MULT['read']}/x{DEFAULT_CACHE_MULT['write']} unless set per model)")
     L.append(f"gate overhead: {s['gate_ms_mean']} ms mean, {s['gate_ms_p95']} ms p95  (upstream mean {s['upstream_ms_mean']} ms)")
     L.append(f"safety: protected-span verification fallbacks {s['fallback_to_original']}, protected_ok {100 * s['protected_ok_rate']:.2f}%, "
              f"internal errors {s['errors']}, upstream errors {s['upstream_errors']}")

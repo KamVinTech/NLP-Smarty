@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+__version__ = "0.6.0"  # the single source of truth: tools/check_release.py keeps pyproject/package.json/lock in sync with it
 PROTOCOL_VERSION = "1.0"
 
 # Error codes

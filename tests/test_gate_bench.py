@@ -71,3 +71,23 @@ def test_smarty_cli_wires_bench_stats_and_serve(tmp_path, capsys):
     with pytest.raises(SystemExit) as e:
         smarty_cli.main(["serve", "--help"])
     assert e.value.code == 0 and "upstream" in capsys.readouterr().out
+
+
+def test_bench_replays_both_api_shapes_and_reports_the_mix(tmp_path, capsys):
+    anthropic = {"model": "c", "max_tokens": 9, "system": "s", "messages": [
+        {"role": "user", "content": [{"type": "text", "text": FILLER + "Keep get_user_by_id verbatim."}]}],
+        "tools": [{"name": "f", "description": "Could you please use this tool in order to fetch it.", "input_schema": {"type": "object"}}]}
+    f = tmp_path / "mixed.jsonl"
+    f.write_text(json.dumps(req()) + "\n" + json.dumps({"ts": 1, "body": anthropic}) + "\n")
+    r = gb.run(gb.load_requests(str(f)), "strict")
+    assert r["apis"] == {"openai": 1, "anthropic": 1} and r["applied"] == 2 and r["saved_tokens"] > 0
+    assert gb.main([str(f), "--profiles", "strict"]) == 0
+    assert "1 anthropic, 1 openai" in capsys.readouterr().out
+
+
+def test_synthetic_anthropic_requests_have_the_real_shape(tmp_path):
+    (tmp_path / "doc.md").write_text(("The service retries failed calls in order to stay available. " * 8 + "\n\n") * 6)
+    reqs = gb.synthetic_from_docs(str(tmp_path), n=2, api="anthropic")
+    assert gate.detect_api(reqs[0]) == "anthropic" and reqs[0]["tools"][0]["input_schema"]["type"] == "object"
+    assert isinstance(reqs[0]["system"], list) and reqs[0]["messages"][0]["content"][0]["type"] == "text"
+    assert gb.main(["--from-docs", str(tmp_path), "--n", "2", "--api", "anthropic", "--profiles", "strict"]) == 0

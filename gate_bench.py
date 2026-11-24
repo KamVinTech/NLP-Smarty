@@ -36,7 +36,7 @@ def load_requests(path: str) -> list[dict]:
     return [i["body"] if isinstance(i, dict) and isinstance(i.get("body"), dict) else i for i in items if isinstance(i, dict)]
 
 
-def synthetic_from_docs(root: str, n: int = 30, chunks: int = 6, seed: int = 7) -> list[dict]:
+def synthetic_from_docs(root: str, n: int = 30, chunks: int = 6, seed: int = 7, api: str = "openai") -> list[dict]:
     """RAG-style requests: real paragraphs from real files as context, a polite filler-laden question, a tool schema."""
     paras: list[str] = []
     for dp, dns, fns in os.walk(root):
@@ -61,6 +61,12 @@ def synthetic_from_docs(root: str, n: int = 30, chunks: int = 6, seed: int = 7) 
     out = []
     for _ in range(n):
         ctx = "\n\n".join(f"[doc {i + 1}]\n{rng.choice(paras)}" for i in range(chunks))
+        if api == "anthropic":
+            a_tools = [{"name": t["function"]["name"], "description": t["function"]["description"],
+                        "input_schema": t["function"]["parameters"]} for t in tools]
+            out.append({"model": "synthetic", "max_tokens": 512, "system": [{"type": "text", "text": "You answer using only the provided documents."}],
+                        "messages": [{"role": "user", "content": [{"type": "text", "text": f"{ctx}\n\n{rng.choice(qs)}"}]}], "tools": a_tools})
+            continue
         out.append({"model": "synthetic", "messages": [{"role": "system", "content": "You answer using only the provided documents."},
                     {"role": "user", "content": f"{ctx}\n\n{rng.choice(qs)}"}], "tools": tools})
     return out
@@ -68,10 +74,13 @@ def synthetic_from_docs(root: str, n: int = 30, chunks: int = 6, seed: int = 7) 
 
 def run(requests: list[dict], profile: str) -> dict[str, Any]:
     raw = fwd = fallbacks = errors = applied = 0
+    apis: dict[str, int] = {}
     cats = {c: [0, 0] for c in CATEGORIES}
     per, ms = [], []
     for body in requests:
-        r = gate.gate_openai_request(body, profile)
+        api = gate.detect_api(body)
+        apis[api] = apis.get(api, 0) + 1
+        r = gate.gate_request(body, profile, api)
         raw += r.raw_tokens
         fwd += r.fwd_tokens
         fallbacks += r.fallbacks
@@ -83,7 +92,7 @@ def run(requests: list[dict], profile: str) -> dict[str, Any]:
             cats[c][0] += a
             cats[c][1] += b
     ms.sort()
-    return {"profile": profile, "requests": len(requests), "applied": applied, "raw_tokens": raw, "fwd_tokens": fwd,
+    return {"profile": profile, "requests": len(requests), "apis": apis, "applied": applied, "raw_tokens": raw, "fwd_tokens": fwd,
             "saved_tokens": raw - fwd, "saved_pct": round(100 * (raw - fwd) / raw, 2) if raw else 0.0,
             "per_request_saved_pct": {"min": round(min(per), 2), "median": round(statistics.median(per), 2), "max": round(max(per), 2)} if per else {},
             "categories": {c: {"before": a, "after": b, "saved": a - b} for c, (a, b) in cats.items()},
@@ -92,7 +101,8 @@ def run(requests: list[dict], profile: str) -> dict[str, Any]:
 
 
 def format_report(results: list[dict], label: str) -> str:
-    L = [f"{label}: {results[0]['requests']} requests, {results[0]['raw_tokens']} estimated input tokens before gating", ""]
+    mix = ", ".join(f"{n} {k}" for k, n in sorted(results[0].get("apis", {}).items()))
+    L = [f"{label}: {results[0]['requests']} requests ({mix}), {results[0]['raw_tokens']} estimated input tokens before gating", ""]
     L.append(f"{'profile':12}{'saved':>9}{'%':>8}{'median/req':>12}{'max/req':>9}  {'user text':>10}{'schemas':>9}{'dupes':>8}{'fallbacks':>10}{'p95 ms':>8}")
     for r in results:
         c = r["categories"]
@@ -109,12 +119,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("file", nargs="?", help="JSONL/JSON of recorded requests")
     ap.add_argument("--from-docs", metavar="DIR", help="build SYNTHETIC RAG requests from real text files in DIR")
     ap.add_argument("--n", type=int, default=30)
+    ap.add_argument("--api", choices=("openai", "anthropic"), default="openai", help="shape of the --from-docs synthetic requests")
     ap.add_argument("--profiles", nargs="+", default=list(gate.PROFILES), choices=sorted(gate.PROFILES))
     ap.add_argument("--json", dest="json_out")
     a = ap.parse_args(argv)
     try:
         if a.from_docs:
-            reqs, label = synthetic_from_docs(a.from_docs, a.n), f"SYNTHETIC requests built from real documents in {a.from_docs}"
+            reqs, label = synthetic_from_docs(a.from_docs, a.n, api=a.api), f"SYNTHETIC {a.api} requests built from real documents in {a.from_docs}"
         elif a.file:
             reqs, label = load_requests(a.file), f"recorded requests from {a.file}"
         else:

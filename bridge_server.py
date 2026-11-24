@@ -41,8 +41,9 @@ DEFAULT_HF_MODEL = os.environ.get("HF_MODEL_ID", "Qwen/Qwen2.5-Coder-32B-Instruc
 def _emit_stderr_audit_log(req_id: str, cmd: str, raw_prompt: str, trace_dict: dict[str, Any]) -> None:
     """
     Writes a structured, human-readable audit log block to sys.stderr (which is
-    streamed live into the VS Code 'NLP-Smarty Optimizer' Output Channel) AND appends
-    to `.nlp_smarty_optimization.log` in the engine working directory.
+    streamed live into the VS Code 'NLP-Smarty Optimizer' Output Channel). A copy is appended to a FILE only when
+    SMARTY_AUDIT_LOG=<path> is set: the block contains previews of the user's prompts, so persisting it to disk
+    (and into the extension's install folder, by default) must be an explicit opt-in.
     """
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     raw_preview = raw_prompt if len(raw_prompt) <= 180 else raw_prompt[:180] + "... [truncated in log preview]"
@@ -70,12 +71,13 @@ def _emit_stderr_audit_log(req_id: str, cmd: str, raw_prompt: str, trace_dict: d
     sys.stderr.write(block)
     sys.stderr.flush()
 
-    try:
-        log_path = os.path.join(os.getcwd(), ".nlp_smarty_optimization.log")
-        with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write(block)
-    except Exception:
-        pass
+    log_path = os.environ.get("SMARTY_AUDIT_LOG", "").strip()
+    if log_path:
+        try:
+            with open(os.path.abspath(os.path.expanduser(log_path)), "a", encoding="utf-8") as fh:
+                fh.write(block)
+        except Exception:
+            pass
 
 
 def _call_hf_or_simulate(prompt_text: str, model_id: str | None = None) -> tuple[str, float, str]:
