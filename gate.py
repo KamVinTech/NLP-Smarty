@@ -99,8 +99,12 @@ def _json_ranges(text: str) -> list[tuple[int, int]]:
                     out.append((i, i + end))
                     i += end
                     continue
+                except json.JSONDecodeError as exc:
+                    scanned += exc.pos + 1  # real decoder work: failing late (unterminated list) is expensive
                 except (ValueError, RecursionError):
-                    pass
+                    scanned += 1000
+                if scanned > _JSON_MAX_SCAN:
+                    raise WorkBudgetExceeded("json scan budget")
         i += 1
     return out
 
