@@ -3,8 +3,8 @@ Verification, Regression & Benchmarking Harness (Step 9)
 Run: python test_harness.py
 """
 
-from data_contracts import RawRequest, TokenBudget
-from pipeline import PROMPT_CACHE, optimize
+from contextgate.data_contracts import RawRequest, TokenBudget
+from contextgate.pipeline import PROMPT_CACHE, optimize
 
 # ── Original 5 Baseline Prompts (100% Backward-Compatible) ─────────────────────
 NOISY_PROMPTS = [

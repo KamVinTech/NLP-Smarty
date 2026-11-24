@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-import repo_indexer as ri
+from contextgate import repo_indexer as ri
 
 os.environ.setdefault("SMARTY_LIGHT_TOKENS", "1")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -276,7 +276,7 @@ def test_docs_rank_below_code_unless_asked(tmp_path):
 
 def test_golden_top1_floor():
     """Quality floor over all golden queries (dev + held-out). Baseline before this work: recall@5 0.889, top-1 0.611."""
-    import eval_retrieval as ev
+    from contextgate import eval_retrieval as ev
 
     g = ev.evaluate_golden(ROOT)["all"]
     assert g["recall@5"] >= 0.9 and g["top1"] >= 0.7, g

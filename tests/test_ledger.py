@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-import ledger as lg
+from contextgate import ledger as lg
 
 
 def row(**kw):

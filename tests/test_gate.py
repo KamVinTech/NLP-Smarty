@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-import gate
+from contextgate import gate
 
 SPANS = {
     "fenced code": "```python\ndef f(x):\n    return  x  +  1\n```",

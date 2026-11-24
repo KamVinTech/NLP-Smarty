@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from bridge_server import process_line
-from protocol import PROTOCOL_VERSION, ProtocolError, validate_request
+from contextgate.bridge import process_line
+from contextgate.protocol import PROTOCOL_VERSION, ProtocolError, validate_request
 
 
 def call(obj):
@@ -64,7 +64,7 @@ def test_audit_pair():
 
 # ── audit log is opt-in (it contains prompt previews) ────────────────────────
 def test_audit_log_file_is_opt_in(tmp_path, monkeypatch, capsys):
-    import bridge_server
+    from contextgate import bridge as bridge_server
 
     trace = {"compressed_query_text": "x", "detected_intent": "T"}
     monkeypatch.chdir(tmp_path)

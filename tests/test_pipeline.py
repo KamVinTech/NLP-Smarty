@@ -1,7 +1,7 @@
 import pytest
 
-from data_contracts import RawRequest
-from pipeline import PROMPT_CACHE, optimize
+from contextgate.data_contracts import RawRequest
+from contextgate.pipeline import PROMPT_CACHE, optimize
 from test_harness import NOISY_PROMPTS, REGRESSION_SUITE
 
 

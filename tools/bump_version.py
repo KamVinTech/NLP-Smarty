@@ -27,7 +27,7 @@ def bump(root: str, version: str) -> list[str]:
         changed.append(path)
 
     sub("pyproject.toml", r'(^\[project\]\s*$.*?^version\s*=\s*")[^"]+(")', rf"\g<1>{version}\g<2>")
-    sub("protocol.py", r'(^__version__\s*=\s*")[^"]+(")', rf"\g<1>{version}\g<2>")
+    sub("contextgate/protocol.py", r'(^__version__\s*=\s*")[^"]+(")', rf"\g<1>{version}\g<2>")
     for path in ("package.json", "package-lock.json"):
         full = os.path.join(root, path)
         d = json.load(open(full, encoding="utf-8"))

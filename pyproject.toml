@@ -37,12 +37,11 @@ nlp = ["spacy", "flashtext", "rank-bm25"]
 dev = ["pytest>=7"]
 
 [project.scripts]
-smarty = "smarty_cli:main"
-smarty-mcp = "mcp_server:main"
-smarty-hook = "smarty_hook:main"
-smarty-gateway = "gateway:main"
+contextgate = "contextgate.cli:main"
+smarty = "contextgate.cli:main"
+smarty-mcp = "contextgate.mcp_server:main"
+smarty-hook = "contextgate.hook:main"
+smarty-gateway = "contextgate.gateway:main"
 
 [tool.setuptools]
-py-modules = ["ab_compare", "app", "bridge_server", "data_contracts", "eval_retrieval", "gate", "gate_bench", "gateway",
-              "ledger", "mcp_server", "pipeline", "protocol", "registry", "repo_indexer", "smarty_cli", "smarty_hook",
-              "token_audit"]
+packages = ["contextgate"]

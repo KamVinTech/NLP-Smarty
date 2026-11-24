@@ -17,8 +17,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from data_contracts import RawRequest
-from pipeline import audit_agent_response, estimate_tokens, optimize
+from .data_contracts import RawRequest
+from .pipeline import audit_agent_response, estimate_tokens, optimize
 
 DEFAULT_HF_MODEL = os.environ.get("HF_MODEL_ID", "Qwen/Qwen2.5-Coder-32B-Instruct")
 DEFAULT_HF_API_URL = os.environ.get(
