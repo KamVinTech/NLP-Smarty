@@ -464,6 +464,15 @@ python smarty_cli.py bench traffic.jsonl                                        
   relayed as it arrives; SIGTERM waits for in-flight requests so no ledger row is lost.
 - **Ledger (`~/.smarty/ledger.db`):** counts only, never content. Savings are original vs forwarded request size with the
   same estimator, calibrated against the provider's exact `usage`; USD uses a price table you supply.
+- **Anthropic `/v1/messages`** (e.g. Claude Code): `serve --upstream https://api.anthropic.com`, then `ANTHROPIC_BASE_URL=http://127.0.0.1:8787`.
+  Only the user's plain-text blocks and tool-schema descriptions are ever rewritten: `system`, `thinking` (signed: any edit
+  invalidates it), `tool_use`, `tool_result` (strict), `<system-reminder>` wrappers and `cache_control` markers are forwarded
+  verbatim. Usage is normalised (fresh + cache reads + cache writes) so calibration matches the whole request. `count_tokens`
+  and batches are relayed ungated. **Verified by tests against the documented format and block shapes seen in real request
+  recordings; not yet verified against live Claude Code.** Per the
+  [Claude Code gateway docs](https://code.claude.com/docs/en/llm-gateway-connect), a base URL alone does not replace a
+  subscription login (a gateway credential is needed) and the **desktop app ignores `ANTHROPIC_BASE_URL`/`settings.json`**;
+  use the CLI or the VS Code extension setting.
 - **Measure before you claim:** on RAG requests built from real documents the strict profile saved about 1% (prose
   compression has little to remove from well-written text). Larger wins need structural reductions (pruning, duplicates,
   bulky tool schemas): run `serve --record traffic.jsonl` and `bench` on your own traffic to see what applies.

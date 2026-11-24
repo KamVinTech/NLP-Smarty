@@ -108,3 +108,35 @@ def test_checks_that_did_not_run_are_not_counted_as_passes(led):
     assert s["negation_checked"] == 2 and s["negation_pass_rate"] == 0.5  # the None row is excluded, not a free pass
     assert s["entity_checked"] == 0 and s["entity_pass_rate"] is None
     assert "entity check not applicable" in lg.format_summary(s)
+
+
+def test_old_ledgers_are_migrated_in_place(tmp_path):
+    import sqlite3
+
+    old = str(tmp_path / "old.db")
+    db = sqlite3.connect(old)
+    db.execute("CREATE TABLE requests(id INTEGER PRIMARY KEY, ts REAL, route TEXT, host TEXT, model TEXT, profile TEXT, stream INTEGER, "
+               "applied INTEGER, raw_tokens INTEGER, fwd_tokens INTEGER, up_prompt_tokens INTEGER, up_completion_tokens INTEGER, "
+               "gate_ms REAL, upstream_ms REAL, status INTEGER, fallbacks INTEGER, protected_ok INTEGER, error TEXT, "
+               "audit_score INTEGER, neg_ok INTEGER, entity_ok INTEGER)")
+    db.execute("INSERT INTO requests(ts, raw_tokens, fwd_tokens, applied) VALUES (1.0, 100, 90, 1)")
+    db.commit()
+    db.close()
+    led = lg.Ledger(old)
+    led.record(**row(api="anthropic", up_cache_read_tokens=700, up_cache_write_tokens=100))
+    rows = led.rows()
+    assert len(rows) == 2 and rows[0]["raw_tokens"] == 100 and rows[0]["api"] is None  # the old row survived
+    assert rows[1]["api"] == "anthropic" and rows[1]["up_cache_read_tokens"] == 700
+    led.close()
+
+
+def test_cache_usage_is_summarised_and_discounts_the_usd_estimate(led):
+    led.record(**row(api="anthropic", up_prompt_tokens=1000, up_cache_read_tokens=800, up_cache_write_tokens=100))
+    s = lg.summarize(led.rows(), {"m1": {"input_per_mtok": 10.0}})
+    assert s["upstream_cache_read_tokens"] == 800 and s["cache_read_share"] == 0.8 and s["by_api"]["anthropic"]["requests"] == 1
+    eff = ((1000 - 900) + 800 * 0.10 + 100 * 1.25) / 1000  # blended price multiplier of that request's actual cache mix
+    k = 1000 / 800
+    assert s["usd_input_saved_est"] == pytest.approx(200 * k * eff / 1e6 * 10.0, abs=1e-5)
+    flat = lg.summarize(led.rows(), {"m1": {"input_per_mtok": 10.0, "cache_read_mult": 1.0, "cache_write_mult": 1.0}})
+    assert flat["usd_input_saved_est"] == pytest.approx(200 * k / 1e6 * 10.0, abs=1e-5)  # overridable per model
+    assert "provider cache: 80.0%" in lg.format_summary(s)

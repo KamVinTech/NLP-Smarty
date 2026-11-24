@@ -202,3 +202,112 @@ def test_accounting_and_latency_fields():
     r = gate.gate_openai_request(body, "strict")
     assert r.applied and r.raw_tokens > r.fwd_tokens and r.saved == r.raw_tokens - r.fwd_tokens
     assert r.protected_ok and r.fallbacks == 0 and 0 < r.ms < 100
+
+
+# ── Anthropic /v1/messages ────────────────────────────────────────────────────
+REMINDER = "<system-reminder>\nCodebase and user instructions: please always just be careful, basically.\n</system-reminder>"
+SIG = "CAQSmgUKEAgUGAI4AUIIdGhpbmtpbmc" * 4
+A_TOOLS = [{"name": "Bash", "description": "Could you please use this tool in order to run get_user_by_id style commands.",
+            "input_schema": {"type": "object", "properties": {"command": {"type": "string",
+                             "description": "I would like you to provide the command; do not pass secrets", "enum": ["a"]}},
+                             "required": ["command"]}, "cache_control": {"type": "ephemeral"}}]
+
+
+def a_req():
+    return {"model": "claude", "max_tokens": 100, "stream": True,
+            "system": [{"type": "text", "text": "Could you please always be basically helpful.", "cache_control": {"type": "ephemeral"}}],
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": REMINDER},
+                                             {"type": "text", "text": FILLER + "Keep `get_user_by_id` verbatim, do not use recursion."}]},
+                {"role": "assistant", "content": [{"type": "thinking", "thinking": "hmm", "signature": SIG},
+                                                  {"type": "text", "text": "Could you please share more? I would like to help."},
+                                                  {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls  -la   src/"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1",
+                                              "content": "Could you please see   this output I was wondering if"}]}],
+            "tools": A_TOOLS}
+
+
+def test_anthropic_only_the_users_plain_text_and_tool_descriptions_change():
+    body = a_req()
+    r = gate.gate_anthropic_request(body, "strict")
+    assert r.applied and body == a_req()  # the caller's object is never mutated
+    out = r.body
+    blocks = out["messages"][0]["content"]
+    assert blocks[0]["text"] == REMINDER  # system-reminder wrapper: instruction text, never rewritten
+    assert blocks[1]["text"] != body["messages"][0]["content"][1]["text"] and "`get_user_by_id`" in blocks[1]["text"]
+    assert "Could you please" not in blocks[1]["text"] and "do not use recursion" in blocks[1]["text"]
+    assert out["system"] == body["system"]  # system prompt untouched (and its cache_control)
+    assert out["messages"][1] == body["messages"][1]  # thinking signature, assistant text and tool_use verbatim
+    assert out["messages"][2] == body["messages"][2]  # tool_result untouched in strict
+    t = out["tools"][0]
+    assert t["cache_control"] == {"type": "ephemeral"} and "in order to" not in t["description"] and "get_user_by_id" in t["description"]
+    assert _strip_descriptions(out["tools"]) == _strip_descriptions(A_TOOLS)  # input_schema structure identical
+    assert "do not pass secrets" in t["input_schema"]["properties"]["command"]["description"]
+    assert r.by_category["user_text"][1] < r.by_category["user_text"][0] and r.by_category["tool_schemas"][1] < r.by_category["tool_schemas"][0]
+
+
+def test_anthropic_string_content_and_non_prose_blocks():
+    body = {"system": "Be helpful.", "messages": [{"role": "user", "content": FILLER + "Fix the retry_handler.py bug."},
+                                                  {"role": "user", "content": REMINDER + " could you please"},
+                                                  {"role": "user", "content": "<ide_selection>could you please</ide_selection>"}]}
+    r = gate.gate_anthropic_request(body, "strict")
+    msgs = r.body["messages"]
+    assert "retry_handler.py" in msgs[0]["content"] and "Could you please" not in msgs[0]["content"]
+    assert msgs[1]["content"] == body["messages"][1]["content"] and msgs[2]["content"] == body["messages"][2]["content"]
+
+
+def test_anthropic_balanced_collapses_duplicate_tool_results_causally():
+    big = "same tool output line " * 80
+    def tr(i, content): return {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"t{i}", "content": content}]}
+    msgs = [tr(1, big), {"role": "assistant", "content": [{"type": "text", "text": "ok"}]}, tr(2, big),
+            tr(3, [{"type": "text", "text": big}])]
+    strict = gate.gate_anthropic_request({"messages": copy.deepcopy(msgs)}, "strict")
+    bal = gate.gate_anthropic_request({"messages": copy.deepcopy(msgs)}, "balanced")
+    assert strict.body["messages"][2] == msgs[2]  # strict never rewrites tool results
+    assert bal.body["messages"][0] == msgs[0]  # first occurrence kept
+    assert bal.body["messages"][2]["content"][0]["content"] == "[identical to message #0]"
+    assert bal.body["messages"][3]["content"][0]["content"] == "[identical to message #0]"  # list-of-text form too
+    assert bal.body["messages"][2]["content"][0]["tool_use_id"] == "t2"  # pairing ids preserved
+    assert bal.by_category["duplicates"][0] > bal.by_category["duplicates"][1]
+
+
+@pytest.mark.parametrize("profile", ["strict", "balanced", "aggressive"])
+def test_anthropic_prefix_stability(profile):
+    rng = random.Random(5)
+    big = "log line one two three four five six seven eight nine ten " * 40
+    for _ in range(20):
+        msgs = []
+        for i in range(rng.randint(2, 10)):
+            if rng.random() < 0.5:
+                msgs.append({"role": "user", "content": rng.choice([f"Could you please look at item {i}, basically?", big])})
+            else:
+                msgs.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"t{i}", "content": rng.choice([big, f"r{i}"])}]})
+        full = gate.gate_anthropic_request({"messages": copy.deepcopy(msgs), "tools": A_TOOLS}, profile).body["messages"]
+        for k in range(1, len(msgs) + 1):
+            assert gate.gate_anthropic_request({"messages": copy.deepcopy(msgs[:k]), "tools": A_TOOLS}, profile).body["messages"] == full[:k]
+
+
+def test_anthropic_never_larger_and_fails_open(monkeypatch):
+    plain = {"system": "s", "messages": [{"role": "user", "content": "Refactor retry_handler.py."}]}
+    r = gate.gate_anthropic_request(plain, "strict")
+    assert not r.applied and r.body is plain and r.saved == 0
+    monkeypatch.setattr(gate, "_compress_segments", lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+    r = gate.gate_anthropic_request(a_req(), "strict")
+    assert not r.applied and "RuntimeError" in r.error and r.body == a_req()
+
+
+def test_system_counts_toward_token_accounting_even_though_it_is_untouched():
+    body = a_req()
+    r = gate.gate_anthropic_request(body, "strict")
+    without = gate._tok({"messages": body["messages"], "tools": body["tools"]})
+    assert r.raw_tokens > without  # `system` is input the provider bills, so calibration against usage stays honest
+
+
+def test_detect_api_and_dispatcher():
+    assert gate.detect_api(a_req()) == "anthropic"
+    assert gate.detect_api({"system": "s", "messages": []}) == "anthropic"
+    assert gate.detect_api({"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]}) == "openai"
+    assert gate.detect_api({"tools": [{"type": "function", "function": {"name": "f"}}], "messages": []}) == "openai"
+    assert gate.detect_api("junk") == "openai"
+    assert gate.gate_request(a_req()).applied and gate.gate_request({"messages": [{"role": "user", "content": PROMPT}]}).applied
+    assert gate.gate_request(a_req(), api="openai").body is not None  # explicit routing wins over detection

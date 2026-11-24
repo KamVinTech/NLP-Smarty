@@ -275,3 +275,118 @@ def gate_openai_request(body: dict, profile: Profile | str = "strict") -> GateRe
     except Exception as exc:  # fail open
         t = _tok({"messages": body.get("messages"), "tools": body.get("tools")}) if isinstance(body, dict) else 0
         return GateResult(body, t, t, {}, 0, True, (time.perf_counter() - t0) * 1000, False, error=f"{type(exc).__name__}: {exc}")
+
+
+# ── Anthropic /v1/messages ────────────────────────────────────────────────────
+# Real Claude Code requests (checked against recorded request blobs): user text blocks are mostly <system-reminder>
+# wrappers (instruction text: never rewritten), assistant `thinking` blocks carry signatures (changing one character
+# invalidates them), `tool_use` blocks hold exact commands. So only the user's own plain-text blocks and tool-schema
+# descriptions are ever touched; system, thinking, tool_use and (in strict) tool_result are forwarded verbatim.
+_NEVER_TOUCH = ("thinking", "redacted_thinking", "tool_use", "server_tool_use", "image", "document")
+
+
+def _is_prose(text: str) -> bool:
+    s = text.lstrip()
+    return bool(s) and not s.startswith("<") and "<system-reminder>" not in text
+
+
+def _maybe_backref(text: str, idx: int, seen: dict[str, int], cat: list[int]) -> str | None:
+    tk = _tok(text)
+    if tk < DEDUPE_MIN_TOKENS:
+        return None
+    h = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()
+    if h in seen:
+        ref = f"[identical to message #{seen[h]}]"
+        cat[0] += tk
+        cat[1] += _tok(ref)
+        return ref
+    seen[h] = idx
+    return None
+
+
+def _anthropic_payload(b: dict) -> dict:
+    return {"system": b.get("system"), "messages": b.get("messages"), "tools": b.get("tools")}
+
+
+def gate_anthropic_request(body: dict, profile: Profile | str = "strict") -> GateResult:
+    """Transform an Anthropic Messages request. Never raises: on any error the original body is returned."""
+    prof = PROFILES[profile] if isinstance(profile, str) else profile
+    t0 = time.perf_counter()
+    try:
+        out = copy.deepcopy(body)
+        state = {"fallbacks": 0}
+        cats = {"user_text": [0, 0], "tool_schemas": [0, 0], "duplicates": [0, 0]}
+        seen: dict[str, int] = {}
+        for i, msg in enumerate(out.get("messages") or []):
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if msg.get("role") == "user":
+                if isinstance(content, str):
+                    if _is_prose(content):
+                        new, ok = gate_text(content, prof.prose_level)
+                        cats["user_text"][0] += _tok(content)
+                        cats["user_text"][1] += _tok(new)
+                        state["fallbacks"] += 0 if ok else 1
+                        msg["content"] = new
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str) \
+                                and _is_prose(block["text"]):
+                            new, ok = gate_text(block["text"], prof.prose_level)
+                            cats["user_text"][0] += _tok(block["text"])
+                            cats["user_text"][1] += _tok(new)
+                            state["fallbacks"] += 0 if ok else 1
+                            block["text"] = new
+            if prof.dedupe:  # causal exact-duplicate collapse; same rules as the OpenAI path
+                content = msg.get("content")
+                if isinstance(content, str):
+                    ref = _maybe_backref(content, i, seen, cats["duplicates"])
+                    if ref:
+                        msg["content"] = ref
+                elif isinstance(content, list):
+                    for block in content:
+                        if not (isinstance(block, dict) and block.get("type") == "tool_result") or block.get("type") in _NEVER_TOUCH:
+                            continue
+                        inner = block.get("content")
+                        text = inner if isinstance(inner, str) else (
+                            "\n".join(x["text"] for x in inner) if isinstance(inner, list) and inner and all(
+                                isinstance(x, dict) and x.get("type") == "text" and isinstance(x.get("text"), str) for x in inner) else None)
+                        if text:
+                            ref = _maybe_backref(text, i, seen, cats["duplicates"])
+                            if ref:
+                                block["content"] = ref
+        if prof.schemas and isinstance(out.get("tools"), list):
+            before = _tok(out["tools"])
+            out["tools"] = _walk_descriptions(out["tools"], prof.prose_level, state)  # also reaches input_schema descriptions
+            cats["tool_schemas"] = [before, _tok(out["tools"])]
+        raw_t, fwd_t = _tok(_anthropic_payload(body)), _tok(_anthropic_payload(out))
+        if fwd_t >= raw_t:
+            return GateResult(body, raw_t, raw_t, {k: (a, a) for k, (a, _) in cats.items()}, state["fallbacks"],
+                              state["fallbacks"] == 0, (time.perf_counter() - t0) * 1000, False)
+        return GateResult(out, raw_t, fwd_t, {k: (a, b) for k, (a, b) in cats.items()}, state["fallbacks"],
+                          state["fallbacks"] == 0, (time.perf_counter() - t0) * 1000, True)
+    except Exception as exc:  # fail open
+        t = _tok(_anthropic_payload(body)) if isinstance(body, dict) else 0
+        return GateResult(body, t, t, {}, 0, True, (time.perf_counter() - t0) * 1000, False, error=f"{type(exc).__name__}: {exc}")
+
+
+def detect_api(body: Any) -> str:
+    """'anthropic' or 'openai', from the request shape (used by offline replay; the proxy knows the route)."""
+    if not isinstance(body, dict):
+        return "openai"
+    msgs = body.get("messages") if isinstance(body.get("messages"), list) else []
+    if "system" in body and not any(isinstance(m, dict) and m.get("role") == "system" for m in msgs):
+        return "anthropic"
+    tools = body.get("tools")
+    if isinstance(tools, list) and tools and isinstance(tools[0], dict) and "input_schema" in tools[0]:
+        return "anthropic"
+    for m in msgs:
+        c = m.get("content") if isinstance(m, dict) else None
+        if isinstance(c, list) and any(isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result", "thinking") for b in c):
+            return "anthropic"
+    return "openai"
+
+
+def gate_request(body: dict, profile: Profile | str = "strict", api: str | None = None) -> GateResult:
+    return (gate_anthropic_request if (api or detect_api(body)) == "anthropic" else gate_openai_request)(body, profile)
