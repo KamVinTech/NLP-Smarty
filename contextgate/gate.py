@@ -101,7 +101,10 @@ def _json_ranges(text: str) -> list[tuple[int, int]]:
                     continue
                 except json.JSONDecodeError as exc:
                     scanned += exc.pos + 1  # real decoder work: failing late (unterminated list) is expensive
-                except (ValueError, RecursionError):
+                except RecursionError:
+                    scanned += 200_000  # deep nesting is the expensive failure (the C decoder recurses until its limit, which is
+                                        # much deeper on newer Pythons): charge it like a full-size scan
+                except ValueError:
                     scanned += 1000
                 if scanned > _JSON_MAX_SCAN:
                     raise WorkBudgetExceeded("json scan budget")
