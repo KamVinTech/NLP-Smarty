@@ -3,8 +3,8 @@ import os
 
 import pytest
 
-from contextgate import ab_compare as ab
-from contextgate import repo_indexer as ri
+from contextgate_core import ab_compare as ab
+from contextgate_core import repo_indexer as ri
 
 
 # ── labels ────────────────────────────────────────────────────────────────────

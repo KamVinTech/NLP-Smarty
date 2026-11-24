@@ -116,7 +116,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment:
       name: pypi
-      url: https://pypi.org/p/nlp-smarty
+      url: https://pypi.org/p/contextgate-core
     permissions:
       contents: read # a job-level block replaces the default, so checkout still needs this
       id-token: write # PyPI trusted publishing: no API token is stored anywhere

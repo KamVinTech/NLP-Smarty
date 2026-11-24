@@ -7,9 +7,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from contextgate import gate
-from contextgate import gateway
-from contextgate import ledger as lg
+from contextgate_core import gate
+from contextgate_core import gateway
+from contextgate_core import ledger as lg
 
 FILLER = "Hey! Could you please help me and I was wondering if you could basically fix this, in order to be safe? "
 PROMPT = FILLER + "Do not use recursion and keep `get_user_by_id` and https://example.com/a?b=1 verbatim, without using slicing."

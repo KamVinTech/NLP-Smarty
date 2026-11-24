@@ -26,10 +26,10 @@ from typing import Any
 # Clone-mode install root = the directory holding the root launchers (smarty_hook.py, mcp_server.py, ...); the package sits inside it.
 HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER_NAME = "nlp-smarty"
-# Each entry is recognised in BOTH install modes: a clone registers `<home>/smarty_hook.py`, a pip install registers `-m contextgate.hook`.
-HOOK_MARK = ("smarty_hook.py", "contextgate.hook")
-INDEX_MARK = ("repo_indexer.py", "contextgate.repo_indexer")
-MCP_MARK = ("mcp_server.py", "contextgate.mcp_server")
+# Each entry is recognised in BOTH install modes: a clone registers `<home>/smarty_hook.py`, a pip install registers `-m contextgate_core.hook`.
+HOOK_MARK = ("smarty_hook.py", "contextgate_core.hook")
+INDEX_MARK = ("repo_indexer.py", "contextgate_core.repo_indexer")
+MCP_MARK = ("mcp_server.py", "contextgate_core.mcp_server")
 
 
 def _mentions(marks: tuple[str, ...], text: str) -> bool:
@@ -40,7 +40,7 @@ class Launch:
     """How the hook, the index refresh and the MCP server are started.
 
     clone mode:     `<python> <home>/smarty_hook.py`      (root launchers next to the package; also what existing installs use)
-    installed mode: `<python> -m contextgate.hook`        (pip install: there are no root launchers)
+    installed mode: `<python> -m contextgate_core.hook`        (pip install: there are no root launchers)
     """
 
     def __init__(self, python: str, home: str) -> None:
@@ -318,15 +318,15 @@ def _resolve_root(arg: str) -> str:
 
 def _preflight(home: str, explicit: bool = False) -> None:
     if explicit or os.path.exists(os.path.join(home, HOOK_MARK[0])):  # clone mode (an explicit --home is always treated as one): every launcher and the package must be there
-        missing = [f for f in (HOOK_MARK[0], INDEX_MARK[0], MCP_MARK[0], "contextgate/pipeline.py") if not os.path.exists(os.path.join(home, f))]
+        missing = [f for f in (HOOK_MARK[0], INDEX_MARK[0], MCP_MARK[0], "contextgate_core/pipeline.py") if not os.path.exists(os.path.join(home, f))]
         if missing:
             raise InitError(f"NLP-Smarty install at {home} is missing: {', '.join(missing)} (use --home)")
         return
     import importlib.util  # installed mode: the package itself must provide the entry points
 
-    missing = [m for m in ("hook", "repo_indexer", "mcp_server", "pipeline") if importlib.util.find_spec(f"contextgate.{m}") is None]
+    missing = [m for m in ("hook", "repo_indexer", "mcp_server", "pipeline") if importlib.util.find_spec(f"contextgate_core.{m}") is None]
     if missing:
-        raise InitError(f"the contextgate package is missing modules: {', '.join(missing)}")
+        raise InitError(f"the contextgate_core package is missing modules: {', '.join(missing)}")
 
 
 def cmd_init(a: argparse.Namespace) -> int:
@@ -384,7 +384,7 @@ def cmd_doctor(a: argparse.Namespace) -> int:
     ok = True
     try:
         _preflight(home, a.home is not None)
-        ok &= _check("install files present" if Launch(sys.executable, home).clone else "contextgate package present", True, home)
+        ok &= _check("install files present" if Launch(sys.executable, home).clone else "contextgate_core package present", True, home)
     except InitError as exc:
         return 1 if not _check("install files present", False, str(exc)) else 0
     s = {k: _load_json(p) or {} for k, p in _settings_paths(root).items()}
@@ -430,7 +430,7 @@ def cmd_audit(a: argparse.Namespace) -> int:
 def _delegate(module: str, args: list[str]) -> int:
     import importlib
 
-    return importlib.import_module(f"contextgate.{module}").main(args)
+    return importlib.import_module(f"contextgate_core.{module}").main(args)
 
 
 def cmd_serve(a: argparse.Namespace) -> int:

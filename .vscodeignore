@@ -10,9 +10,9 @@
 
 # Python engine: root launcher + the package modules the bridge imports (bridge -> pipeline -> data_contracts, registry; protocol)
 !bridge_server.py
-!contextgate/__init__.py
-!contextgate/bridge.py
-!contextgate/pipeline.py
-!contextgate/data_contracts.py
-!contextgate/registry.py
-!contextgate/protocol.py
+!contextgate_core/__init__.py
+!contextgate_core/bridge.py
+!contextgate_core/pipeline.py
+!contextgate_core/data_contracts.py
+!contextgate_core/registry.py
+!contextgate_core/protocol.py

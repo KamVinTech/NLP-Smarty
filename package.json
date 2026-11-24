@@ -161,7 +161,7 @@
         "contextGate.engineDirectory": {
           "type": "string",
           "default": "",
-          "description": "Path to directory containing bridge_server.py and the contextgate/ package (defaults to extension root)."
+          "description": "Path to directory containing bridge_server.py and the contextgate_core/ package (defaults to extension root)."
         },
         "contextGate.autoShowLogs": {
           "type": "boolean",

@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from contextgate import hook as smarty_hook
+from contextgate_core import hook as smarty_hook
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
