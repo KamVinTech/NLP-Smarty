@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-import gate
+from contextgate import gate
 from tests.test_gateway import PROMPT, SECRET, chat, make_gw, post, up  # noqa: F401  (fixtures)
 
 

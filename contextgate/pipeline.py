@@ -27,8 +27,8 @@ import unicodedata
 from collections import Counter, OrderedDict
 from typing import Any, Callable
 
-from data_contracts import CompiledPrompt, OptimizationTrace, RawRequest, TokenBudget
-from registry import (
+from .data_contracts import CompiledPrompt, OptimizationTrace, RawRequest, TokenBudget
+from .registry import (
     FEW_SHOT_EXAMPLES,
     GUARDRAIL_RULES,
     REQUIRED_SLOTS,

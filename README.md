@@ -53,21 +53,21 @@ One engine, three surfaces:
    VS Code ── extension.ts ─ JSON-Lines ─► bridge_server.py ─► pipeline.py (9-step optimizer)
                                                   │                 ├─ data_contracts.py (typed contracts)
                                                   │                 └─ registry.py (tools, few-shots, guardrails, slots)
-                                                  └─► app.py (optional downstream HF consumer / offline simulator)
+                                                  └─► downstream.py (optional downstream HF consumer / offline simulator)
 ```
 
 | Component | File | Responsibility |
 |---|---|---|
-| Gate | `gate.py` | Protected-span detection, deterministic prose compression (`strict`/`balanced`/`aggressive`), verification with fallback, OpenAI and Anthropic request walkers |
-| Gateway | `gateway.py` | Local proxy: request validation, gating, streaming relay, response audit, ledger rows |
-| Ledger | `ledger.py` | Counts-only SQLite ledger; estimator calibration against provider `usage`; `stats` report |
-| Offline bench | `gate_bench.py` | Replays recorded requests through the gate and reports per-profile, per-transform savings |
-| Optimizer | `pipeline.py` | 9-step prompt compiler (budgeting, schema compression, MMR/BM25 pruning, intent routing, cache, history pruning), post-LLM `audit_agent_response()` |
-| Contracts | `data_contracts.py`, `registry.py`, `protocol.py` | Typed dataclasses; static tools, few-shots, guardrails, required slots; protocol and version constants |
-| Repo intelligence | `repo_indexer.py`, `smarty_hook.py`, `mcp_server.py`, `smarty_cli.py` | Symbol index, Claude Code hook, MCP server, and the `smarty` CLI (`init`, `doctor`, `uninstall`, `audit`, `serve`, `stats`, `bench`) |
-| VS Code | `src/extension.ts`, `bridge_server.py` | Extension client plus persistent JSON-Lines engine sidecar |
-| Measurement | `token_audit.py`, `ab_compare.py`, `eval_retrieval.py` | Session cost audit, A/B tooling, retrieval-quality evaluation |
-| Downstream demo | `app.py` | HuggingFace consumer with offline simulator, used by the extension's compare view |
+| Gate | `contextgate/gate.py` | Protected-span detection, deterministic prose compression (`strict`/`balanced`/`aggressive`), verification with fallback, OpenAI and Anthropic request walkers |
+| Gateway | `contextgate/gateway.py` | Local proxy: request validation, gating, streaming relay, response audit, ledger rows |
+| Ledger | `contextgate/ledger.py` | Counts-only SQLite ledger; estimator calibration against provider `usage`; `stats` report |
+| Offline bench | `contextgate/gate_bench.py` | Replays recorded requests through the gate and reports per-profile, per-transform savings |
+| Optimizer | `contextgate/pipeline.py` | 9-step prompt compiler (budgeting, schema compression, MMR/BM25 pruning, intent routing, cache, history pruning), post-LLM `audit_agent_response()` |
+| Contracts | `contextgate/data_contracts.py`, `registry.py`, `protocol.py` | Typed dataclasses; static tools, few-shots, guardrails, required slots; protocol and version constants |
+| Repo intelligence | `contextgate/repo_indexer.py`, `hook.py`, `mcp_server.py`, `cli.py` | Symbol index, Claude Code hook, MCP server, and the `smarty` CLI (`init`, `doctor`, `uninstall`, `audit`, `serve`, `stats`, `bench`) |
+| VS Code | `src/extension.ts`, `contextgate/bridge.py` | Extension client plus persistent JSON-Lines engine sidecar |
+| Measurement | `contextgate/token_audit.py`, `ab_compare.py`, `eval_retrieval.py` | Session cost audit, A/B tooling, retrieval-quality evaluation |
+| Downstream demo | `contextgate/downstream.py` | HuggingFace consumer with offline simulator, used by the extension's compare view |
 
 **Hard rules.** No LLM or network calls and no `tiktoken` in `pipeline.py`, `data_contracts.py` or `registry.py`. The default install has **zero runtime dependencies**; `spacy`, `rank_bm25`, `flashtext` and `scikit-learn` are optional, each with a pure-Python fallback.
 
@@ -85,7 +85,22 @@ python3 -m pytest -q --tb=short tests     # unit and adversarial tests
 ```
 
 Optional extras for the full optimizer: `pip install spacy rank_bm25 flashtext scikit-learn && python -m spacy download en_core_web_sm`.
-`pip install .` provides the commands `smarty`, `smarty-mcp`, `smarty-hook` and `smarty-gateway`.
+`pip install .` installs the `contextgate` package and the commands `contextgate`, `smarty`, `smarty-mcp`, `smarty-hook` and `smarty-gateway`.
+
+---
+
+## Use as a library
+
+```python
+from contextgate import gate_text, gate_request, optimize, estimate_tokens
+
+text, ok = gate_text("Could you please basically fix `get_user()` in order to be safe; do not use recursion.", level=2)
+# ok=False means verification failed and `text` is the ORIGINAL unchanged
+```
+
+`gate_text` / `gate_request` (OpenAI and Anthropic request bodies) are the zero-dependency gate; `optimize` is the 9-step prompt compiler.
+`import contextgate` is instant: the public names load lazily. The distribution name on PyPI is still undecided, so install from a clone:
+`pip install .`. Console scripts: `contextgate` (alias `smarty`), `smarty-gateway`, `smarty-mcp`, `smarty-hook`.
 
 ---
 
@@ -136,6 +151,7 @@ python3 smarty_cli.py uninstall [--purge]     # remove only what init added
 python3 smarty_cli.py audit --last 10         # where do your sessions' tokens go? (reads Claude Code transcripts)
 ```
 
+- **Two install modes, same command.** From a clone, `init` registers the launcher scripts (`<clone>/smarty_hook.py`); from a pip install it registers `python -m contextgate.hook` / `-m contextgate.mcp_server` using the interpreter that has the package. `doctor` and `uninstall` recognise both.
 - Hooks go to `.claude/settings.local.json` (machine-specific, git-excluded); `--scope project` shares them. `init` is idempotent, merges into existing JSON (aborts on unparseable files) and keeps one-time backups in `.smarty/backups/`.
 - The hook is fail-open (always exits 0), stdlib-only, never injects the same symbol twice in a session, and stays silent below a confidence gate.
 - MCP tools: `smarty_get_context`, `smarty_find_symbol`, `smarty_find_references`, `smarty_repo_map`, `smarty_get_slice`, plus the optimizer tools (`smarty_optimize`, `smarty_audit_response`, `smarty_compress_context`, `smarty_compress_tool_schema`). The server's agent-facing instructions are **off by default** (in a live test the agent never used the tools even with them); opt in with `SMARTY_MCP_INSTRUCTIONS=on` in the `env` of `.mcp.json`.
@@ -172,9 +188,9 @@ Chat participant: `@contextgate /optimize <prompt>`, `@contextgate /compare <pro
 | `contextGate.autoShowLogs` / `optimizeOnSave` | `true` / `false` | Reveal the Output panel; refresh the inspector on save |
 | `contextGate.auditLogFile` | `""` | Optional file copy of the audit log. It contains **previews of your prompts**, so nothing is written to disk unless you set this (the Output stream is always on) |
 
-**Bridge sidecar (`bridge_server.py`).** A persistent process speaking one JSON object per line on stdin/stdout. Commands: `optimize`, `compare_hf` (pipeline + Raw and Compiled prompts to `app.py`; offline simulator without `HF_TOKEN`), `audit_pair` (audits responses produced by `vscode.lm`), `clear_cache`, `capabilities`, `ping`. Open workspace files are split into chunks of at most 45 words on blank lines and `def`/`class`/`function`/`export`/`interface` boundaries before MMR pruning. Smoke test: `echo '{"id":"1","command":"ping"}' | python3 bridge_server.py`.
+**Bridge sidecar (`bridge_server.py`).** A persistent process speaking one JSON object per line on stdin/stdout. Commands: `optimize`, `compare_hf` (pipeline + Raw and Compiled prompts to `contextgate/downstream.py`; offline simulator without `HF_TOKEN`), `audit_pair` (audits responses produced by `vscode.lm`), `clear_cache`, `capabilities`, `ping`. Open workspace files are split into chunks of at most 45 words on blank lines and `def`/`class`/`function`/`export`/`interface` boundaries before MMR pruning. Smoke test: `echo '{"id":"1","command":"ping"}' | python3 bridge_server.py`.
 
-The extension ships exactly `bridge_server.py`, `pipeline.py`, `data_contracts.py`, `registry.py`, `protocol.py` and the compiled extension (allowlist in `.vscodeignore`, enforced by a test).
+The extension ships exactly the launcher `bridge_server.py`, the package files `contextgate/{__init__,bridge,pipeline,data_contracts,registry,protocol}.py` and the compiled extension (allowlist in `.vscodeignore`, enforced by a test).
 
 **Reading the numbers in the UI.** "est. tokens" are the built-in estimator, not provider counts. "vs unpruned template" is measured against a *modeled baseline*, not against the request you would otherwise have sent (see below).
 
@@ -271,16 +287,23 @@ Each has tests.
 
 ```
 NLP-Smarty/
-├── gate.py  gateway.py  ledger.py  gate_bench.py        # gateway surface
-├── pipeline.py  data_contracts.py  registry.py  protocol.py   # optimizer + contracts
-├── repo_indexer.py  smarty_hook.py  mcp_server.py  smarty_cli.py   # repo-intelligence surface
-├── bridge_server.py  app.py  src/extension.ts            # VS Code surface
-├── token_audit.py  ab_compare.py  eval_retrieval.py      # measurement
-├── test_harness.py  tests/                               # benchmark + pytest suites
-├── tools/  (bump_version.py, check_release.py)
+├── contextgate/                 # the importable package (this is all the wheel installs)
+│   ├── gate.py  gateway.py  ledger.py  gate_bench.py           # gateway surface
+│   ├── pipeline.py  data_contracts.py  registry.py  protocol.py     # optimizer + contracts
+│   ├── repo_indexer.py  hook.py  mcp_server.py  cli.py        # repo-intelligence surface
+│   ├── bridge.py  downstream.py                                 # VS Code sidecar, optional HF consumer
+│   └── token_audit.py  ab_compare.py  eval_retrieval.py         # measurement
+├── smarty_cli.py  smarty_hook.py  mcp_server.py  bridge_server.py  gateway.py  ...   # thin root launchers (see below)
+├── src/extension.ts             # VS Code extension
+├── test_harness.py  tests/      # benchmark + pytest suites
+├── tools/  (bump_version.py, check_release.py)  ·  docs/RESTRUCTURE.md
 ├── .github/workflows/  (ci.yml, release.yml)
 └── package.json  pyproject.toml  tsconfig.json  .vscodeignore
 ```
+
+The root scripts are 10-line launchers that call the package (`python smarty_hook.py` runs `contextgate.hook`). They exist because `smarty init`
+registers absolute script paths and recognises its own entries by filename, and the extension spawns `bridge_server.py`; they keep existing installs working.
+They are not part of the wheel. Rationale and remaining phases: [`docs/RESTRUCTURE.md`](docs/RESTRUCTURE.md).
 
 ## Dependencies
 
@@ -291,7 +314,7 @@ NLP-Smarty/
 | `rank_bm25` | BM25 scoring | Built-in `_FastBM25Okapi` |
 | `scikit-learn` | TF-IDF utilities | Built-in sparse TF-IDF + cosine |
 | `flashtext` | Keyword matching | Weighted regex patterns |
-| `huggingface_hub` | Live HF calls in `app.py` | `urllib` HTTP, then offline simulator |
+| `huggingface_hub` | Live HF calls in `contextgate/downstream.py` | `urllib` HTTP, then offline simulator |
 
 Extension build: `typescript ^5.4.0`, `@types/vscode ^1.90.0`, `@types/node ^20.0.0`.
 
@@ -343,7 +366,7 @@ Pushing the tag runs [`release.yml`](.github/workflows/release.yml): verify (ver
 One-time setup for publishing (nothing publishes until you do these):
 
 - **VS Code Marketplace:** the publisher ID must equal `publisher` in `package.json` (`KamVinTech-contextgate`) and is permanent once created. Add a credential as the repository secret `VSCE_PAT` (scope *Marketplace > Manage*). Global Azure DevOps tokens retire on 2026-12-01; later releases need Microsoft Entra ID (`vsce publish --azure-credential`). Without a credential the Marketplace step is skipped and the `.vsix` is still attached to the release.
-- **PyPI (opt-in):** add the repository as a trusted publisher (workflow `release.yml`, environment `pypi`), create the GitHub environment `pypi` and set the repository variable `PUBLISH_PYPI=true`. **Blocked on purpose** until the code lives under one package: the wheel installs 17 top-level modules into `site-packages`, and the publish job runs `tools/check_release.py --strict-namespace` and refuses.
+- **PyPI (opt-in):** the code now lives under one package, so the namespace check passes. Still open: choose the distribution name (`contextgate` is taken on PyPI), then add the repository as a trusted publisher (workflow `release.yml`, environment `pypi`), create the GitHub environment `pypi` and set the repository variable `PUBLISH_PYPI=true`.
 
 ## Privacy and license
 

@@ -8,9 +8,11 @@
 !LICENSE
 !out/extension.js
 
-# Python engine (bridge_server -> pipeline -> data_contracts, registry; protocol)
+# Python engine: root launcher + the package modules the bridge imports (bridge -> pipeline -> data_contracts, registry; protocol)
 !bridge_server.py
-!pipeline.py
-!data_contracts.py
-!registry.py
-!protocol.py
+!contextgate/__init__.py
+!contextgate/bridge.py
+!contextgate/pipeline.py
+!contextgate/data_contracts.py
+!contextgate/registry.py
+!contextgate/protocol.py

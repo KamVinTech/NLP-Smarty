@@ -25,7 +25,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
-import pipeline as _p  # deterministic rule tables + estimate_tokens (pure Python, no heavy dependencies)
+from . import pipeline as _p  # deterministic rule tables + estimate_tokens (pure Python, no heavy dependencies)
 
 estimate_tokens = _p.estimate_tokens
 

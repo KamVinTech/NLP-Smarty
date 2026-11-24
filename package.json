@@ -136,7 +136,7 @@
         "id": "contextgate.participant",
         "name": "contextgate",
         "fullName": "ContextGate",
-        "description": "Compare Raw vs. Deterministically Optimized prompts on real workspace files via Copilot (vscode.lm) or HuggingFace (app.py).",
+        "description": "Compare Raw vs. Deterministically Optimized prompts on real workspace files via Copilot (vscode.lm) or HuggingFace.",
         "isSticky": true,
         "commands": [
           {
@@ -161,7 +161,7 @@
         "contextGate.engineDirectory": {
           "type": "string",
           "default": "",
-          "description": "Path to directory containing bridge_server.py, app.py, and pipeline.py (defaults to extension root)."
+          "description": "Path to directory containing bridge_server.py and the contextgate/ package (defaults to extension root)."
         },
         "contextGate.autoShowLogs": {
           "type": "boolean",
@@ -181,17 +181,17 @@
             "huggingface"
           ],
           "default": "auto",
-          "description": "Downstream LLM backend for side-by-side comparison ('auto' uses vscode.lm Copilot if available, else HuggingFace app.py)."
+          "description": "Downstream LLM backend for side-by-side comparison ('auto' uses vscode.lm Copilot if available, else HuggingFace)."
         },
         "contextGate.huggingFaceToken": {
           "type": "string",
           "default": "",
-          "description": "Optional HuggingFace API token (HF_TOKEN) when using the HuggingFace app.py backend."
+          "description": "Optional HuggingFace API token (HF_TOKEN) when using the HuggingFace backend."
         },
         "contextGate.huggingFaceModel": {
           "type": "string",
           "default": "Qwen/Qwen2.5-Coder-32B-Instruct",
-          "description": "HuggingFace model ID for app.py downstream evaluation."
+          "description": "HuggingFace model ID for the downstream evaluation."
         },
         "contextGate.compressionIntensity": {
           "type": "string",

@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from mcp_server import handle_message
+from contextgate.mcp_server import handle_message
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -116,8 +116,8 @@ def test_instructions_opt_in_are_short_and_accurate(monkeypatch, value):
     monkeypatch.setenv("SMARTY_MCP_INSTRUCTIONS", value)
     import re
 
-    import repo_indexer as ri
-    from mcp_server import INSTRUCTIONS, TOOLS
+    from contextgate import repo_indexer as ri
+    from contextgate.mcp_server import INSTRUCTIONS, TOOLS
 
     text = rpc("initialize", {"protocolVersion": "2025-06-18"})["result"]["instructions"]
     assert text == INSTRUCTIONS and text.startswith("nlp-smarty index:")

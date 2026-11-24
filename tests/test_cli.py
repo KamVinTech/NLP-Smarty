@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-import smarty_cli as cli
+from contextgate import cli as cli
 
 
 @pytest.fixture
@@ -204,3 +204,47 @@ def test_symlinked_claude_md_is_edited_through_not_replaced(repo):
     assert (repo / "CLAUDE.md").is_symlink() and cli.BEGIN in (repo / "AGENTS.md").read_text()
     run(repo, "uninstall")
     assert (repo / "CLAUDE.md").is_symlink() and (repo / "AGENTS.md").read_text().strip() == "# Shared rules"
+
+
+# ── installed mode (pip install: no root launchers next to the package) ──────────
+ENGINE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+@pytest.fixture
+def installed(tmp_path, monkeypatch):
+    """Pretend `smarty` runs from a pip install: HOME has no launchers, and the package is importable from anywhere."""
+    empty = tmp_path / "site-packages"
+    empty.mkdir()
+    monkeypatch.setattr(cli, "HOME", str(empty))
+    monkeypatch.setenv("PYTHONPATH", ENGINE_ROOT)
+    return empty
+
+
+def test_installed_mode_registers_python_dash_m_not_script_paths(repo, installed):
+    assert run(repo, "init") == 0
+    hook = cmds(jl(repo, ".claude/settings.local.json"), "UserPromptSubmit")[0]
+    index = cmds(jl(repo, ".claude/settings.local.json"), "SessionStart")[0]
+    assert "-m contextgate.hook" in hook and "-m contextgate.repo_indexer" in index and ".py" not in hook
+    mcp = jl(repo, ".mcp.json")["mcpServers"]["nlp-smarty"]
+    assert mcp["args"] == ["-m", "contextgate.mcp_server"] and mcp["env"] == {"SMARTY_ROOT": "."}
+
+
+def test_installed_mode_doctor_passes_and_uninstall_is_clean(repo, installed, capsys):
+    before = snap(repo)
+    assert run(repo, "init", "--agents-md") == 0
+    assert run(repo, "doctor") == 0, capsys.readouterr().out
+    assert run(repo, "init", "--agents-md") == 0  # idempotent: recognises its own `-m` entries
+    assert len(cmds(jl(repo, ".claude/settings.local.json"), "UserPromptSubmit")) == 1
+    assert run(repo, "uninstall", "--purge") == 0
+    assert snap(repo) == before
+
+
+def test_entries_written_in_clone_mode_are_recognised_after_switching_to_installed_mode(repo, installed, monkeypatch):
+    monkeypatch.setattr(cli, "HOME", ENGINE_ROOT)  # clone mode first
+    assert run(repo, "init") == 0
+    assert "smarty_hook.py" in cmds(jl(repo, ".claude/settings.local.json"), "UserPromptSubmit")[0]
+    monkeypatch.setattr(cli, "HOME", str(installed))  # then a pip-installed smarty looks at the same repo
+    assert run(repo, "init") == 0
+    assert len(cmds(jl(repo, ".claude/settings.local.json"), "UserPromptSubmit")) == 1
+    assert run(repo, "uninstall") == 0
+    assert not (repo / ".mcp.json").exists()
