@@ -387,6 +387,13 @@ def cmd_doctor(a: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_audit(a: argparse.Namespace) -> int:
+    sys.path.insert(0, HOME)
+    import token_audit  # noqa: WPS433
+
+    return token_audit.main(a.audit_args)
+
+
 def cmd_uninstall(a: argparse.Namespace) -> int:
     root = _resolve_root(a.root)
     plan = Plan()
@@ -466,6 +473,9 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("doctor", help="verify an install end to end")
     common(d)
     d.set_defaults(fn=cmd_doctor)
+    au = sub.add_parser("audit", help="where do your agent sessions' tokens go? (reads Claude Code transcripts)")
+    au.add_argument("audit_args", nargs=argparse.REMAINDER, help="passed to token_audit (see: python token_audit.py -h)")
+    au.set_defaults(fn=cmd_audit)
     u = sub.add_parser("uninstall", help="remove what init added")
     common(u)
     u.add_argument("--dry-run", action="store_true")

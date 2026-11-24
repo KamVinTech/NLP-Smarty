@@ -21,5 +21,5 @@ smarty-mcp = "mcp_server:main"
 smarty-hook = "smarty_hook:main"
 
 [tool.setuptools]
-py-modules = ["app", "bridge_server", "data_contracts", "eval_retrieval", "mcp_server", "pipeline", "protocol",
-              "registry", "repo_indexer", "smarty_cli", "smarty_hook"]
+py-modules = ["ab_compare", "app", "bridge_server", "data_contracts", "eval_retrieval", "mcp_server", "pipeline",
+              "protocol", "registry", "repo_indexer", "smarty_cli", "smarty_hook", "token_audit"]
