@@ -19,7 +19,9 @@ dev = ["pytest>=7"]
 smarty = "smarty_cli:main"
 smarty-mcp = "mcp_server:main"
 smarty-hook = "smarty_hook:main"
+smarty-gateway = "gateway:main"
 
 [tool.setuptools]
-py-modules = ["ab_compare", "app", "bridge_server", "data_contracts", "eval_retrieval", "mcp_server", "pipeline",
-              "protocol", "registry", "repo_indexer", "smarty_cli", "smarty_hook", "token_audit"]
+py-modules = ["ab_compare", "app", "bridge_server", "data_contracts", "eval_retrieval", "gate", "gate_bench", "gateway",
+              "ledger", "mcp_server", "pipeline", "protocol", "registry", "repo_indexer", "smarty_cli", "smarty_hook",
+              "token_audit"]

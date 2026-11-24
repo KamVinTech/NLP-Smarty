@@ -106,3 +106,10 @@ def test_smarty_cli_audit_subcommand(session, capsys):
 
     assert smarty_cli.main(["audit", session]) == 0
     assert "where the cost goes" in capsys.readouterr().out
+
+
+def test_smarty_audit_accepts_leading_options(session, capsys):
+    import smarty_cli
+
+    assert smarty_cli.main(["audit", "--w-out", "3", session]) == 0  # an option first used to be rejected by argparse
+    assert "output x3.0" in capsys.readouterr().out  # and the option actually took effect

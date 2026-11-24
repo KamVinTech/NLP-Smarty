@@ -394,6 +394,23 @@ def cmd_audit(a: argparse.Namespace) -> int:
     return token_audit.main(a.audit_args)
 
 
+def _delegate(module: str, args: list[str]) -> int:
+    sys.path.insert(0, HOME)
+    return __import__(module).main(args)
+
+
+def cmd_serve(a: argparse.Namespace) -> int:
+    return _delegate("gateway", a.rest)
+
+
+def cmd_stats(a: argparse.Namespace) -> int:
+    return _delegate("ledger", a.rest)
+
+
+def cmd_bench(a: argparse.Namespace) -> int:
+    return _delegate("gate_bench", a.rest)
+
+
 def cmd_uninstall(a: argparse.Namespace) -> int:
     root = _resolve_root(a.root)
     plan = Plan()
@@ -476,6 +493,12 @@ def build_parser() -> argparse.ArgumentParser:
     au = sub.add_parser("audit", help="where do your agent sessions' tokens go? (reads Claude Code transcripts)")
     au.add_argument("audit_args", nargs=argparse.REMAINDER, help="passed to token_audit (see: python token_audit.py -h)")
     au.set_defaults(fn=cmd_audit)
+    for name, fn, helptext in (("serve", cmd_serve, "OpenAI-compatible gateway proxy (see: python gateway.py -h)"),
+                               ("stats", cmd_stats, "savings ledger report (see: python ledger.py -h)"),
+                               ("bench", cmd_bench, "replay recorded requests through the gate offline (see: python gate_bench.py -h)")):
+        sp = sub.add_parser(name, help=helptext)
+        sp.add_argument("rest", nargs=argparse.REMAINDER)
+        sp.set_defaults(fn=fn)
     u = sub.add_parser("uninstall", help="remove what init added")
     common(u)
     u.add_argument("--dry-run", action="store_true")
@@ -484,7 +507,13 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+DELEGATED = {"serve": "gateway", "stats": "ledger", "bench": "gate_bench", "audit": "token_audit"}
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] in DELEGATED:  # hand the rest to the module untouched (argparse REMAINDER breaks on a leading option)
+        return _delegate(DELEGATED[argv[0]], argv[1:])
     a = build_parser().parse_args(argv)
     try:
         return a.fn(a)
