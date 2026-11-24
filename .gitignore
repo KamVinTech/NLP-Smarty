@@ -39,7 +39,9 @@ htmlcov/
 
 # ── IDE & OS Noise ────────────────────────────────────────────────────────────
 .DS_Store
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
 .idea/
 Thumbs.db
 
