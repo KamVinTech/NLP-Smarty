@@ -102,3 +102,19 @@ def test_verbose_log_cannot_be_injected_via_newlines(make_gw, up, capsys):
     port, _ = make_gw(verbose=True)
     _raw(port, b"GET /v1/models?x=%0d%0aFAKE HTTP/1.1\r\nHost: x\r\n\r\n")
     assert "\r" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("text", ["[1," * 60_000, "[" * 100_000, '{"a": ' * 30_000])
+def test_gate_json_decoder_work_is_bounded_by_attempts_not_by_how_fast_this_python_is(text, monkeypatch):
+    """A wall-clock assertion is machine-dependent (3.13 recurses much deeper in the C decoder than 3.9): count the work instead."""
+    calls = []
+    real = gate._JSON_DECODER.raw_decode
+
+    class Counting:
+        def raw_decode(self, s):
+            calls.append(1)
+            return real(s)
+
+    monkeypatch.setattr(gate, "_JSON_DECODER", Counting())
+    gate.gate_text(text, 2)
+    assert len(calls) <= 100, len(calls)
