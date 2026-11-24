@@ -71,7 +71,7 @@ jobs:
         run: |
           mkdir -p dist
           VERSION=$(node -p "require('./package.json').version")
-          npx --yes "@vscode/vsce@${VSCE_VERSION}" package --out "dist/nlp-smarty-vscode-${VERSION}.vsix"
+          npx --yes "@vscode/vsce@${VSCE_VERSION}" package --out "dist/contextgate-${VERSION}.vsix"
       - name: Audit the package contents
         run: python3 tools/check_release.py --vsix dist/*.vsix
       - name: Smoke test the packaged engine (system Python, no venv, no dependencies)
