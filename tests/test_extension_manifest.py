@@ -14,7 +14,9 @@ CONTRIB = PJ["contributes"]
 def test_identity_is_contextgate():
     assert PJ["name"] == "contextgate" and re.fullmatch(r"[a-z0-9][a-z0-9\-]*", PJ["name"])  # VS Code requires a lowercase id
     assert PJ["displayName"] == "ContextGate"
-    assert f"{PJ['publisher']}.{PJ['name']}".endswith(".contextgate")
+    # The publisher ID is PERMANENT once created on the Marketplace: changing it here must be a conscious decision.
+    assert PJ["publisher"] == "KamVinTech-contextgate" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9\-]*", PJ["publisher"])
+    assert f"{PJ['publisher']}.{PJ['name']}" == "KamVinTech-contextgate.contextgate"
     lock = json.load(open(os.path.join(ROOT, "package-lock.json")))
     assert lock["name"] == lock["packages"][""]["name"] == "contextgate"
 

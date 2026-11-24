@@ -2,7 +2,7 @@
   "name": "contextgate",
   "displayName": "ContextGate",
   "description": "Zero-LLM prompt compression, MMR context pruning, tool schema compression, live Old vs. New prompt stats, and side-by-side Raw vs. Optimized LLM evaluation.",
-  "publisher": "KamVinTech",
+  "publisher": "KamVinTech-contextgate",
   "license": "MIT",
   "repository": {
     "type": "git",

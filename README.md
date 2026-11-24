@@ -497,8 +497,11 @@ with all artifacts attached. **Actions -> Release -> Run workflow** is a dry run
 
 One-time setup for publishing (nothing publishes until you do these):
 - **VS Code Marketplace:** create a publisher at <https://marketplace.visualstudio.com/manage> whose ID equals `publisher` in
-  `package.json` (currently `KamVinTech`), create a Personal Access Token with the *Marketplace > Manage* scope, and add it as the
-  repository secret `VSCE_PAT`. Without it the Marketplace step is skipped and the `.vsix` is still attached to the release.
+  `package.json` (`KamVinTech-contextgate`, so the extension ID is `KamVinTech-contextgate.contextgate`). The ID is **permanent**
+  once created. Then add a credential as the repository secret `VSCE_PAT` (a Personal Access Token with the *Marketplace > Manage*
+  scope). **Global Azure DevOps tokens retire on 2026-12-01**: a token created this way works for a first release before then, but
+  later releases need Microsoft Entra ID (`vsce publish --azure-credential` with a federated GitHub credential). Without any
+  credential the Marketplace step is skipped and the `.vsix` is still attached to the release.
 - **PyPI (opt-in):** add this repository as a *trusted publisher* on PyPI (workflow `release.yml`, environment `pypi`), create the
   GitHub environment `pypi`, and set the repository variable `PUBLISH_PYPI=true`. No API token is stored anywhere.
   **PyPI is blocked on purpose until the code lives under one package:** today the wheel installs 17 top-level modules
