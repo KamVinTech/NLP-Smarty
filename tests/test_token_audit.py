@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from contextgate import token_audit as ta
+from contextgate_core import token_audit as ta
 
 W = ta.DEFAULT_WEIGHTS
 WORDS = "word " * 600  # ~600+ estimated tokens
@@ -102,14 +102,14 @@ def test_cli(session, tmp_path, capsys):
 
 
 def test_smarty_cli_audit_subcommand(session, capsys):
-    from contextgate import cli as smarty_cli
+    from contextgate_core import cli as smarty_cli
 
     assert smarty_cli.main(["audit", session]) == 0
     assert "where the cost goes" in capsys.readouterr().out
 
 
 def test_smarty_audit_accepts_leading_options(session, capsys):
-    from contextgate import cli as smarty_cli
+    from contextgate_core import cli as smarty_cli
 
     assert smarty_cli.main(["audit", "--w-out", "3", session]) == 0  # an option first used to be rejected by argparse
     assert "output x3.0" in capsys.readouterr().out  # and the option actually took effect

@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "nlp-smarty"
+name = "contextgate-core"
 version = "0.6.0"
 description = "Deterministic, zero-LLM prompt optimizer and repo-intelligence layer (hooks + MCP) for coding agents"
 readme = "README.md"
@@ -37,11 +37,10 @@ nlp = ["spacy", "flashtext", "rank-bm25"]
 dev = ["pytest>=7"]
 
 [project.scripts]
-contextgate = "contextgate.cli:main"
-smarty = "contextgate.cli:main"
-smarty-mcp = "contextgate.mcp_server:main"
-smarty-hook = "contextgate.hook:main"
-smarty-gateway = "contextgate.gateway:main"
+smarty = "contextgate_core.cli:main"
+smarty-mcp = "contextgate_core.mcp_server:main"
+smarty-hook = "contextgate_core.hook:main"
+smarty-gateway = "contextgate_core.gateway:main"
 
 [tool.setuptools]
-packages = ["contextgate"]
+packages = ["contextgate_core"]

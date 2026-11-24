@@ -2,9 +2,9 @@ import json
 
 import pytest
 
-from contextgate import gate
-from contextgate import gate_bench as gb
-from contextgate import cli as smarty_cli
+from contextgate_core import gate
+from contextgate_core import gate_bench as gb
+from contextgate_core import cli as smarty_cli
 
 FILLER = "Could you please help me, and I was wondering if you could basically fix this in order to be safe? "
 

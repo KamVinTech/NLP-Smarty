@@ -2,118 +2,118 @@
   {
     "q": "compress verbose JSON tool schema into compact typed signature",
     "expect": [
-      "contextgate/pipeline.py:_compress_tool_schema"
+      "contextgate_core/pipeline.py:_compress_tool_schema"
     ]
   },
   {
     "q": "select relevant tools for a query by trigger keywords",
     "expect": [
-      "contextgate/pipeline.py:_select_and_compress_tools"
+      "contextgate_core/pipeline.py:_select_and_compress_tools"
     ]
   },
   {
     "q": "maximal marginal relevance selection of diverse chunks",
     "expect": [
-      "contextgate/pipeline.py:_mmr_select"
+      "contextgate_core/pipeline.py:_mmr_select"
     ]
   },
   {
     "q": "simhash hamming distance for near-duplicate prompt cache lookup",
     "expect": [
-      "contextgate/pipeline.py:_hamming_distance64",
-      "contextgate/pipeline.py:PromptCache.lookup"
+      "contextgate_core/pipeline.py:_hamming_distance64",
+      "contextgate_core/pipeline.py:PromptCache.lookup"
     ]
   },
   {
     "q": "audit llm response for negation violations and entity fidelity",
     "expect": [
-      "contextgate/pipeline.py:audit_agent_response"
+      "contextgate_core/pipeline.py:audit_agent_response"
     ]
   },
   {
     "q": "validate bridge request and return error code for unknown command",
     "expect": [
-      "contextgate/protocol.py:validate_request"
+      "contextgate_core/protocol.py:validate_request"
     ]
   },
   {
     "q": "split workspace file into chunks for context pruning",
     "expect": [
-      "contextgate/bridge.py:chunk_workspace_file"
+      "contextgate_core/bridge.py:chunk_workspace_file"
     ]
   },
   {
     "q": "MCP tools/call handler returning isError in band",
     "expect": [
-      "contextgate/mcp_server.py:handle_message"
+      "contextgate_core/mcp_server.py:handle_message"
     ]
   },
   {
     "q": "estimate BPE subword token count of text",
     "expect": [
-      "contextgate/pipeline.py:estimate_tokens"
+      "contextgate_core/pipeline.py:estimate_tokens"
     ]
   },
   {
     "q": "redact secrets like api keys from code slices",
     "expect": [
-      "contextgate/repo_indexer.py:redact_secrets"
+      "contextgate_core/repo_indexer.py:redact_secrets"
     ]
   },
   {
     "q": "prune conversation history keeping relevant turns",
     "expect": [
-      "contextgate/pipeline.py:_prune_conversation_history"
+      "contextgate_core/pipeline.py:_prune_conversation_history"
     ]
   },
   {
     "q": "token budget dataclass for core query context history tools",
     "expect": [
-      "contextgate/data_contracts.py:TokenBudget"
+      "contextgate_core/data_contracts.py:TokenBudget"
     ]
   },
   {
     "q": "bm25 okapi scoring class with idf",
     "expect": [
-      "contextgate/pipeline.py:_FastBM25Okapi"
+      "contextgate_core/pipeline.py:_FastBM25Okapi"
     ],
     "set": "heldout"
   },
   {
     "q": "term frequency inverse document frequency cosine similarity between sparse vectors",
     "expect": [
-      "contextgate/pipeline.py:_cosine_sparse",
-      "contextgate/pipeline.py:_build_tfidf_vector"
+      "contextgate_core/pipeline.py:_cosine_sparse",
+      "contextgate_core/pipeline.py:_build_tfidf_vector"
     ],
     "set": "heldout"
   },
   {
     "q": "strip markup tags to sanitize the payload before building the prompt",
     "expect": [
-      "contextgate/pipeline.py:_sanitize_xml_payload"
+      "contextgate_core/pipeline.py:_sanitize_xml_payload"
     ],
     "set": "heldout"
   },
   {
     "q": "extract negation spans like do not and without",
     "expect": [
-      "contextgate/pipeline.py:_extract_negation_spans",
-      "contextgate/pipeline.py:_extract_negations"
+      "contextgate_core/pipeline.py:_extract_negation_spans",
+      "contextgate_core/pipeline.py:_extract_negations"
     ],
     "set": "heldout"
   },
   {
     "q": "json lines sidecar loop that reads stdin and writes responses",
     "expect": [
-      "contextgate/bridge.py:main",
-      "contextgate/bridge.py:process_line"
+      "contextgate_core/bridge.py:main",
+      "contextgate_core/bridge.py:process_line"
     ],
     "set": "heldout"
   },
   {
     "q": "call hugging face model or fall back to offline simulator",
     "expect": [
-      "contextgate/bridge.py:_call_hf_or_simulate"
+      "contextgate_core/bridge.py:_call_hf_or_simulate"
     ],
     "set": "heldout"
   }

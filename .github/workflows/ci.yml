@@ -24,9 +24,9 @@ jobs:
       - name: The installed wheel works from an empty directory (one package, no flat modules)
         run: |
           pip install . -q
-          cd "$RUNNER_TEMP" && python -I -c "from contextgate import gate_text; assert gate_text('Could you please fix this', 1)[1]" && contextgate --help > /dev/null
+          cd "$RUNNER_TEMP" && python -I -c "from contextgate_core import gate_text; assert gate_text('Could you please fix this', 1)[1]" && smarty --help > /dev/null
           git init -q "$RUNNER_TEMP/target" && echo 'def f(): return 1' > "$RUNNER_TEMP/target/a.py"
-          contextgate init --root "$RUNNER_TEMP/target" && contextgate doctor --root "$RUNNER_TEMP/target" && contextgate uninstall --root "$RUNNER_TEMP/target" --purge
+          smarty init --root "$RUNNER_TEMP/target" && smarty doctor --root "$RUNNER_TEMP/target" && smarty uninstall --root "$RUNNER_TEMP/target" --purge
       - run: python eval_retrieval.py -n 10 --min-recall5 0.0
   extension:
     runs-on: ubuntu-24.04  # pinned: ubuntu-latest (26.04) has no Python 3.9 for setup-python

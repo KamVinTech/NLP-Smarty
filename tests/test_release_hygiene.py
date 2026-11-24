@@ -21,8 +21,8 @@ HAS_GIT = shutil.which("git") is not None and os.path.exists(os.path.join(ROOT, 
 def fixture_repo(tmp_path, version="1.2.3", **over):
     v = {"pyproject": version, "protocol": version, "pkg": version, "lock": version, "lockroot": version, **over}
     (tmp_path / "pyproject.toml").write_text(f'[build-system]\nrequires = ["x"]\n\n[project]\nname = "n"\nversion = "{v["pyproject"]}"\n\n[tool.x]\nversion = "9"\n')
-    (tmp_path / "contextgate").mkdir(exist_ok=True)
-    (tmp_path / "contextgate" / "protocol.py").write_text(f'__version__ = "{v["protocol"]}"\nPROTOCOL_VERSION = "1.0"\n')
+    (tmp_path / "contextgate_core").mkdir(exist_ok=True)
+    (tmp_path / "contextgate_core" / "protocol.py").write_text(f'__version__ = "{v["protocol"]}"\nPROTOCOL_VERSION = "1.0"\n')
     (tmp_path / "package.json").write_text(json.dumps({"name": "n", "version": v["pkg"]}))
     (tmp_path / "package-lock.json").write_text(json.dumps({"name": "n", "version": v["lock"], "packages": {"": {"version": v["lockroot"]}}}))
     return str(tmp_path)
@@ -47,7 +47,7 @@ def test_version_mismatch_and_tag_checks(tmp_path):
 def test_bump_updates_every_location_and_ignores_unrelated_version_keys(tmp_path):
     root = fixture_repo(tmp_path)
     changed = bv.bump(root, "2.0.0")
-    assert set(changed) == {"pyproject.toml", "contextgate/protocol.py", "package.json", "package-lock.json"}
+    assert set(changed) == {"pyproject.toml", "contextgate_core/protocol.py", "package.json", "package-lock.json"}
     assert cr.check_versions(root, "v2.0.0") == []
     assert 'version = "9"' in open(os.path.join(root, "pyproject.toml")).read()  # [tool.x] version untouched
     for bad in ("2.0", "v2.0.0", "2.0.0rc1", ""):
@@ -132,8 +132,8 @@ GOOD_VSIX = ["[Content_Types].xml", "extension.vsixmanifest"] + [f"extension/{n}
 
 def test_vsix_audit(tmp_path):
     assert cr.audit_vsix(make_zip(tmp_path / "ok.vsix", GOOD_VSIX)) == []
-    missing = cr.audit_vsix(make_zip(tmp_path / "m.vsix", [n for n in GOOD_VSIX if not n.endswith("contextgate/protocol.py")]))
-    assert missing == ["vsix is missing contextgate/protocol.py"]
+    missing = cr.audit_vsix(make_zip(tmp_path / "m.vsix", [n for n in GOOD_VSIX if not n.endswith("contextgate_core/protocol.py")]))
+    assert missing == ["vsix is missing contextgate_core/protocol.py"]
     extra = " | ".join(cr.audit_vsix(make_zip(tmp_path / "e.vsix", GOOD_VSIX + ["extension/src/extension.ts", "extension/tests/test_a.py",
                        "extension/gateway.py", "extension/.nlp_smarty_optimization.log", "extension/notes.txt"])))
     for n in ("src/extension.ts", "tests/test_a.py", "gateway.py", ".nlp_smarty_optimization.log"):
@@ -141,12 +141,12 @@ def test_vsix_audit(tmp_path):
     assert "unexpected file: notes.txt" in extra
 
 
-PKG = os.path.join(ROOT, "contextgate")
+PKG = os.path.join(ROOT, "contextgate_core")
 
 
 def _local_imports(module):
-    """(required, optional) package modules imported by contextgate/<module>.py, found with the AST: an import inside any `try` is
-    optional. Handles `from . import x`, `from .x import y` and absolute `contextgate.x` imports."""
+    """(required, optional) package modules imported by contextgate_core/<module>.py, found with the AST: an import inside any `try` is
+    optional. Handles `from . import x`, `from .x import y` and absolute `contextgate_core.x` imports."""
     import ast
 
     mods = {f[:-3] for f in os.listdir(PKG) if f.endswith(".py") and f != "__init__.py"}
@@ -157,7 +157,7 @@ def _local_imports(module):
             names = []
             if isinstance(child, ast.ImportFrom) and child.level == 1:
                 names = [a.name for a in child.names] if not child.module else [child.module.split(".")[0]]
-            elif isinstance(child, ast.ImportFrom) and child.module and child.module.startswith("contextgate."):
+            elif isinstance(child, ast.ImportFrom) and child.module and child.module.startswith("contextgate_core."):
                 names = [child.module.split(".")[1]]
             for n in names:
                 if n in mods and n != module:
@@ -184,10 +184,10 @@ def test_vsix_engine_allowlist_equals_the_bridges_required_import_closure():
     """If the bridge (or something it requires) gains a new unguarded local import, the packaged extension would crash on a
     user's machine unless the .vscodeignore allowlist and the audit list are updated too."""
     closure = _required_closure("bridge")
-    allow = {f for f in _allowlisted_files() if f.startswith("contextgate/") and not f.endswith("__init__.py")}
-    assert {f"contextgate/{m}.py" for m in closure} == allow
+    allow = {f for f in _allowlisted_files() if f.startswith("contextgate_core/") and not f.endswith("__init__.py")}
+    assert {f"contextgate_core/{m}.py" for m in closure} == allow
     assert closure == {"bridge", "pipeline", "data_contracts", "registry", "protocol"}
-    assert set(_allowlisted_files()) == set(allow) | {"bridge_server.py", "contextgate/__init__.py"}
+    assert set(_allowlisted_files()) == set(allow) | {"bridge_server.py", "contextgate_core/__init__.py"}
     assert set(_allowlisted_files()) <= set(cr.VSIX_REQUIRED)
 
 
@@ -205,8 +205,8 @@ def test_bridge_optional_imports_are_guarded_and_absent_from_the_package():
     """`downstream` is an optional consumer: the bridge must degrade to its built-in runner when it is missing, as in the .vsix."""
     required, optional = _local_imports("bridge")
     assert optional == {"downstream"} and "downstream" not in required
-    assert "contextgate/downstream.py" not in cr.VSIX_REQUIRED
-    assert any(re.search(p, "contextgate/downstream.py") for p in cr.VSIX_FORBIDDEN)
+    assert "contextgate_core/downstream.py" not in cr.VSIX_REQUIRED
+    assert any(re.search(p, "contextgate_core/downstream.py") for p in cr.VSIX_FORBIDDEN)
 
 
 def test_vscodeignore_is_an_allowlist_and_ships_the_licence():

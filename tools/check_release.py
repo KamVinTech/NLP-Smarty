@@ -27,12 +27,12 @@ JUNK = [r"(^|/)__pycache__/", r"\.py[co]$", r"\.log$", r"(^|/)\.DS_Store$", r"\.
         r"\.egg-info/", r"^dist/", r"^build/", r"(^|/)\.smarty/", r"^\.claude/", r"^\.mcp\.json$", r"\.smarty-(bak|tmp)$",
         r"(^|/)\.env(\.|$)", r"(^|/)NLP-start/"]
 # vsce renames README.md -> readme.md and LICENSE -> LICENSE.txt inside the package
-VSIX_REQUIRED = ["package.json", "readme.md", "LICENSE.txt", "out/extension.js", "bridge_server.py", "contextgate/__init__.py",
-                 "contextgate/bridge.py", "contextgate/pipeline.py", "contextgate/data_contracts.py", "contextgate/registry.py",
-                 "contextgate/protocol.py"]
+VSIX_REQUIRED = ["package.json", "readme.md", "LICENSE.txt", "out/extension.js", "bridge_server.py", "contextgate_core/__init__.py",
+                 "contextgate_core/bridge.py", "contextgate_core/pipeline.py", "contextgate_core/data_contracts.py", "contextgate_core/registry.py",
+                 "contextgate_core/protocol.py"]
 VSIX_FORBIDDEN = [r"^src/", r"^tests?/", r"^tools/", r"^\.github/", r"^tsconfig", r"^pyproject", r"^pytest", r"\.map$",
                   r"^(gateway|gate_bench|ledger|token_audit|ab_compare|eval_retrieval|repo_indexer|mcp_server|smarty_\w+)\.py$",
-                  r"^contextgate/(?!(__init__|bridge|pipeline|data_contracts|registry|protocol)\.py$)\w+\.py$",  # gate, gateway, cli, hook, downstream, ...
+                  r"^contextgate_core/(?!(__init__|bridge|pipeline|data_contracts|registry|protocol)\.py$)\w+\.py$",  # gate, gateway, cli, hook, downstream, ...
                   r"^test_harness", r"^requirements"]
 
 
@@ -46,7 +46,7 @@ def read_versions(root: str) -> dict[str, str]:
     lock = json.load(open(os.path.join(root, "package-lock.json"), encoding="utf-8"))
     out["package-lock.json"] = lock.get("version", "?")
     out["package-lock.json (root package)"] = lock.get("packages", {}).get("", {}).get("version", "?")
-    p = open(os.path.join(root, "contextgate", "protocol.py"), encoding="utf-8").read()
+    p = open(os.path.join(root, "contextgate_core", "protocol.py"), encoding="utf-8").read()
     m = re.search(r'^__version__\s*=\s*"([^"]+)"', p, re.M)
     out["protocol.__version__"] = m.group(1) if m else "?"
     return out

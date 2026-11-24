@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from contextgate import cli as cli
+from contextgate_core import cli as cli
 
 
 @pytest.fixture
@@ -224,9 +224,9 @@ def test_installed_mode_registers_python_dash_m_not_script_paths(repo, installed
     assert run(repo, "init") == 0
     hook = cmds(jl(repo, ".claude/settings.local.json"), "UserPromptSubmit")[0]
     index = cmds(jl(repo, ".claude/settings.local.json"), "SessionStart")[0]
-    assert "-m contextgate.hook" in hook and "-m contextgate.repo_indexer" in index and ".py" not in hook
+    assert "-m contextgate_core.hook" in hook and "-m contextgate_core.repo_indexer" in index and ".py" not in hook
     mcp = jl(repo, ".mcp.json")["mcpServers"]["nlp-smarty"]
-    assert mcp["args"] == ["-m", "contextgate.mcp_server"] and mcp["env"] == {"SMARTY_ROOT": "."}
+    assert mcp["args"] == ["-m", "contextgate_core.mcp_server"] and mcp["env"] == {"SMARTY_ROOT": "."}
 
 
 def test_installed_mode_doctor_passes_and_uninstall_is_clean(repo, installed, capsys):

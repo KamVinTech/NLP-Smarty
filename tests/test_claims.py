@@ -33,7 +33,7 @@ class ExtensionRegressionTest(unittest.TestCase):
         self.assertIn("Old_Raw_Prompt_${runId}", EXT)      # open diff tabs are not mutated by later runs
 
     def test_engine_log_does_not_say_bpe(self):
-        self.assertNotIn("BPE tokens", (ROOT / "contextgate" / "pipeline.py").read_text(encoding="utf-8"))
+        self.assertNotIn("BPE tokens", (ROOT / "contextgate_core" / "pipeline.py").read_text(encoding="utf-8"))
 
     def test_active_file_is_never_used_as_the_prompt_without_asking(self):
         self.assertIn("Nothing is selected. What should ContextGate optimize?", EXT)
