@@ -1535,7 +1535,7 @@ def optimize(request: RawRequest, few_shot_k: int = 2) -> CompiledPrompt:
     logs.append(
         f"[Stage 1 | {s1_ms}ms] Lexical & Extractive Compression ({intensity}): "
         f"{trace.raw_token_count} -> {trace.optimized_token_count} words (-{trace.query_token_savings_pct}%), "
-        f"BPE: {trace.raw_bpe_tokens} -> {trace.optimized_bpe_tokens} (-{trace.query_bpe_savings_pct}%). "
+        f"est. tokens: {trace.raw_bpe_tokens} -> {trace.optimized_bpe_tokens} (-{trace.query_bpe_savings_pct}%). "
         f"Stripped={stripped or 'none'}, Normalized={normalized_phrases or 'none'}"
     )
 
@@ -1734,7 +1734,7 @@ def optimize(request: RawRequest, few_shot_k: int = 2) -> CompiledPrompt:
     trace.latency_ms = round((time.perf_counter() - t0) * 1000, 2)
     logs.append(
         f"[Stage 4 | {s4_ms}ms] XML Guardrail Compilation: "
-        f"Total Payload {trace.unoptimized_payload_token_count} -> {trace.compiled_payload_token_count} BPE tokens "
+        f"Total Payload {trace.unoptimized_payload_token_count} -> {trace.compiled_payload_token_count} est. tokens vs modeled unpruned template "
         f"(-{trace.payload_token_savings_pct}%) in {trace.latency_ms}ms total."
     )
     trace.stage_logs = logs

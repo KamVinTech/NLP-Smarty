@@ -115,6 +115,8 @@ function resolvePythonPath(engineDir: string): string {
 /**
  * Virtual Document Provider so we can open native VS Code side-by-side red/green Diff views (`vscode.diff`).
  */
+const DIFF_SCHEME = 'contextgate-diff';
+
 class ContextGateDocProvider implements vscode.TextDocumentContentProvider {
     private _onDidChange = new vscode.EventEmitter<vscode.Uri>();
     readonly onDidChange = this._onDidChange.event;
@@ -122,7 +124,7 @@ class ContextGateDocProvider implements vscode.TextDocumentContentProvider {
 
     public setDoc(key: string, content: string): vscode.Uri {
         this.docs.set(key, content);
-        const uri = vscode.Uri.parse(`contextgate-diff:${key}`);
+        const uri = vscode.Uri.parse(`${DIFF_SCHEME}:${key}`);
         this._onDidChange.fire(uri);
         return uri;
     }
@@ -722,6 +724,10 @@ async function resolvePromptAndWorkspaceContext(
     editor: vscode.TextEditor | undefined,
     preferEntireFileAsPrompt: boolean = false
 ): Promise<{ rawPrompt: string; workspaceFiles: Array<{ path: string; content: string }>; sourceLabel: string } | undefined> {
+    // ContextGate's own diff views are output, never input: feeding them back nests headers and inflates every count
+    if (editor && editor.document.uri.scheme === DIFF_SCHEME) {
+        editor = undefined;
+    }
     if (!editor) {
         const input = await vscode.window.showInputBox({
             prompt: 'Enter a raw prompt to optimize',
@@ -746,17 +752,23 @@ async function resolvePromptAndWorkspaceContext(
         };
     }
 
-    const isPromptLikeFile =
-        preferEntireFileAsPrompt ||
-        ['.prompt', '.txt', '.md'].includes(ext) ||
-        editor.document.lineCount <= 40;
-
-    if (isPromptLikeFile && fullText.trim().length > 0) {
-        return {
-            rawPrompt: fullText.trim(),
-            workspaceFiles: [],
-            sourceLabel: `Full File (${fileName})`,
-        };
+    // No selection: never silently swallow the active file. `.prompt` files are prompts by definition;
+    // for anything else the user chooses explicitly.
+    if (ext === '.prompt' && fullText.trim().length > 0) {
+        return { rawPrompt: fullText.trim(), workspaceFiles: [], sourceLabel: `Full File (${fileName})` };
+    }
+    if (fullText.trim().length > 0) {
+        const typePrompt = `Type a prompt (use ${fileName} as context)`;
+        const wholeFile = `Use the entire ${fileName} as the prompt`;
+        const choice = await vscode.window.showQuickPick([typePrompt, wholeFile], {
+            placeHolder: 'Nothing is selected. What should ContextGate optimize? (Tip: select text first to optimize just that.)',
+        });
+        if (!choice) {
+            return undefined;
+        }
+        if (choice === wholeFile) {
+            return { rawPrompt: fullText.trim(), workspaceFiles: [], sourceLabel: `Full File (${fileName})` };
+        }
     }
 
     const input = await vscode.window.showInputBox({
@@ -792,6 +804,7 @@ export function activate(context: vscode.ExtensionContext) {
     let lastCompiledPayload = '';
     let lastTrace: OptimizationTrace | undefined;
 
+    let diffRunCounter = 0;
     const openNativeDiffView = async (rawPrompt: string, compiledPayload: string, t: OptimizationTrace) => {
         const coreOptimized = t.compressed_query_text || compiledPayload;
         const leftContent =
@@ -804,7 +817,7 @@ export function activate(context: vscode.ExtensionContext) {
             `// All Few-Shot Examples    : ${t.raw_examples_tokens} est. tokens\n`;
 
         const rightContent =
-            `// ══════════════ NEW OPTIMIZED CORE PROMPT (${t.optimized_token_count} words | ${t.optimized_bpe_tokens} est. tokens | -${t.query_token_savings_pct}%) ══════════════\n` +
+            `// ══════════════ NEW OPTIMIZED CORE PROMPT (${t.optimized_token_count} words | ${t.optimized_bpe_tokens} est. tokens | -${t.query_token_savings_pct}% words) ══════════════\n` +
             `${coreOptimized}\n\n` +
             `// ══════════════ OPTIMIZATION TELEMETRY & SAVINGS (-${t.payload_token_savings_pct}% vs modeled unpruned template) ══════════════\n` +
             `// Compiled Payload Budget  : ${t.compiled_payload_token_count} est. tokens (saved ${t.unoptimized_payload_token_count - t.compiled_payload_token_count} tokens)\n` +
@@ -819,8 +832,9 @@ export function activate(context: vscode.ExtensionContext) {
             `// ══════════════ FULL COMPILED XML PAYLOAD ══════════════\n` +
             `${compiledPayload}\n`;
 
-        const leftUri = diffProvider.setDoc('Old_Raw_Prompt.md', leftContent);
-        const rightUri = diffProvider.setDoc('New_Optimized_Prompt.md', rightContent);
+        const runId = ++diffRunCounter; // unique URIs: an open diff tab keeps showing the run it was opened for
+        const leftUri = diffProvider.setDoc(`Old_Raw_Prompt_${runId}.md`, leftContent);
+        const rightUri = diffProvider.setDoc(`New_Optimized_Prompt_${runId}.md`, rightContent);
 
         await vscode.commands.executeCommand(
             'vscode.diff',
@@ -1055,7 +1069,7 @@ export function activate(context: vscode.ExtensionContext) {
 
                 const editor = vscode.window.activeTextEditor;
                 const workspaceFiles: Array<{ path: string; content: string }> = [];
-                if (editor) {
+                if (editor && editor.document.uri.scheme !== DIFF_SCHEME) {
                     workspaceFiles.push({
                         path: path.basename(editor.document.fileName),
                         content: editor.document.getText(),
