@@ -56,11 +56,11 @@ def _emit_stderr_audit_log(req_id: str, cmd: str, raw_prompt: str, trace_dict: d
         f"  RAW PROMPT      : {raw_preview!r}",
         f"  COMPRESSED CORE : {comp_preview!r}",
         f"  INTENT & MODE   : {trace_dict.get('detected_intent')} (conf={trace_dict.get('intent_confidence')}, intensity={trace_dict.get('compression_intensity_used')})",
-        f"  QUERY STATS     : {trace_dict.get('raw_token_count')} -> {trace_dict.get('optimized_token_count')} words (-{trace_dict.get('query_token_savings_pct')}%) | BPE: {trace_dict.get('raw_bpe_tokens')} -> {trace_dict.get('optimized_bpe_tokens')} toks (-{trace_dict.get('query_bpe_savings_pct')}%)",
+        f"  QUERY STATS     : {trace_dict.get('raw_token_count')} -> {trace_dict.get('optimized_token_count')} words (-{trace_dict.get('query_token_savings_pct')}%) | est. tokens: {trace_dict.get('raw_bpe_tokens')} -> {trace_dict.get('optimized_bpe_tokens')} toks (-{trace_dict.get('query_bpe_savings_pct')}%)",
         f"  CONTEXT MMR     : kept chunks {trace_dict.get('kept_context_indices')}/{trace_dict.get('total_context_chunks')} ({trace_dict.get('raw_context_tokens')} -> {trace_dict.get('pruned_context_tokens')} toks, -{trace_dict.get('context_token_savings_pct')}%)",
         f"  TOOL SCHEMAS    : {trace_dict.get('raw_tools_tokens')} -> {trace_dict.get('compressed_tools_tokens')} toks (saved {trace_dict.get('tool_schema_tokens_saved')} schema toks, injected={trace_dict.get('injected_tool_ids')})",
         f"  FEW-SHOT MMR    : {trace_dict.get('raw_examples_tokens')} -> {trace_dict.get('selected_examples_tokens')} toks (injected={trace_dict.get('injected_example_ids')})",
-        f"  TOTAL PAYLOAD   : {trace_dict.get('unoptimized_payload_token_count')} -> {trace_dict.get('compiled_payload_token_count')} BPE toks (-{trace_dict.get('payload_token_savings_pct')}%)",
+        f"  TOTAL PAYLOAD   : {trace_dict.get('unoptimized_payload_token_count')} -> {trace_dict.get('compiled_payload_token_count')} est. toks vs modeled unpruned template (-{trace_dict.get('payload_token_savings_pct')}%)",
         f"  CACHE & LATENCY : hit={trace_dict.get('cache_hit')} ({trace_dict.get('cache_type')}, key={trace_dict.get('cache_key')}) | {trace_dict.get('latency_ms')} ms",
     ]
     for s_log in trace_dict.get("stage_logs") or []:

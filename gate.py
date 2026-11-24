@@ -65,38 +65,41 @@ _NEG_SPAN = re.compile(_p._NEGATION_SPAN_PATTERN.pattern, re.IGNORECASE)    # "n
 _DIGIT_TOKEN = re.compile(r"\d[\w.\-:/,%]*")
 
 
+class WorkBudgetExceeded(Exception):
+    """Adversarial/pathological input: the gate skips compression and forwards the original."""
+
+
+_JSON_DECODER = json.JSONDecoder()
+_JSON_MAX_ATTEMPTS = 4000      # candidate '{'/'[' starts that were tried
+_JSON_MAX_SCAN = 4_000_000     # chars handed to the decoder in total
+
+
 def _json_ranges(text: str) -> list[tuple[int, int]]:
-    """Brace-balanced {...} / [...] regions that parse as JSON are protected verbatim."""
+    """Regions that parse as JSON objects/arrays are protected verbatim.
+
+    Uses the C decoder (fails at the first bad token) and a hard work budget, so input like
+    '{' * 100000 cannot burn CPU; over budget raises WorkBudgetExceeded (caller forwards the original).
+    """
     out: list[tuple[int, int]] = []
-    i, n = 0, len(text)
+    i, n, attempts, scanned = 0, len(text), 0, 0
     while i < n:
         c = text[i]
         if c in "{[":
-            close, depth, j, in_str, esc = "}" if c == "{" else "]", 0, i, False, False
-            while j < n and j - i < 200_000:
-                ch = text[j]
-                if in_str:
-                    esc = (ch == "\\") and not esc
-                    if ch == '"' and not esc:
-                        in_str = False
-                    if ch != "\\":
-                        esc = False
-                elif ch == '"':
-                    in_str = True
-                elif ch == c:
-                    depth += 1
-                elif ch == close:
-                    depth -= 1
-                    if depth == 0:
-                        break
-                j += 1
-            if j < n and depth == 0:
+            nxt = text[i + 1:i + 2].lstrip() or text[i + 1:i + 40].lstrip()[:1]
+            # cheap pre-filter: an object must open with a quote or '}', a list with a value start
+            if (c == "{" and nxt in ('"', "}")) or (c == "[" and nxt and (nxt in '"{[]-0123456789tfn')):
+                attempts += 1
+                if attempts > _JSON_MAX_ATTEMPTS:
+                    raise WorkBudgetExceeded("json scan budget")
                 try:
-                    json.loads(text[i:j + 1])
-                    out.append((i, j + 1))
-                    i = j + 1
+                    _, end = _JSON_DECODER.raw_decode(text[i:i + 200_000])
+                    scanned += end
+                    if scanned > _JSON_MAX_SCAN:
+                        raise WorkBudgetExceeded("json scan budget")
+                    out.append((i, i + end))
+                    i += end
                     continue
-                except ValueError:
+                except (ValueError, RecursionError):
                     pass
         i += 1
     return out
@@ -168,7 +171,10 @@ def gate_text(text: str, level: int) -> tuple[str, bool]:
     """(text, ok): compressed text, or the ORIGINAL with ok=False if verification failed."""
     if not text or not text.strip():
         return text, True
-    out = _compress_segments(text, level)
+    try:
+        out = _compress_segments(text, level)
+    except WorkBudgetExceeded:
+        return text, False
     if out != text and verify(text, out):
         return text, False
     return out, True
