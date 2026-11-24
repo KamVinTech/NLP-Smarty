@@ -157,4 +157,8 @@ jobs:
         with:
           node-version: 20
       - if: steps.gate.outputs.enabled == 'true'
-        run: npx --yes "@vscode/vsce@${VSCE_VERSION}" publish --packagePath dist/*.vsix
+        env:
+          # Repository variable MARKETPLACE_PRERELEASE=true publishes to the Marketplace pre-release channel
+          # (the Marketplace has no semver suffix: the same x.y.z is flagged as pre-release at publish time).
+          PRE: ${{ vars.MARKETPLACE_PRERELEASE == 'true' && '--pre-release' || '' }}
+        run: npx --yes "@vscode/vsce@${VSCE_VERSION}" publish --packagePath dist/*.vsix $PRE
