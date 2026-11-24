@@ -1,4 +1,4 @@
-# Release: tag vX.Y.Z -> verify -> build wheel/sdist + .vsix -> GitHub Release -> (opt-in) PyPI -> (if configured) Marketplace.
+# Release: tag vX.Y.Z -> verify -> build wheel/sdist + .vsix -> GitHub Release -> (opt-in) PyPI -> (opt-in) Marketplace.
 # Manual run (Actions -> Release -> Run workflow) is a DRY RUN: it builds and checks everything and publishes nothing.
 # All actions are pinned to the commit hash their version tag resolved to (supply-chain hardening); update deliberately.
 name: Release
@@ -137,7 +137,8 @@ jobs:
 
   publish-marketplace:
     needs: build-vsix
-    if: github.ref_type == 'tag'
+    # opt-in like PyPI: a tag publishes to the Marketplace only when the repository variable PUBLISH_MARKETPLACE is 'true'
+    if: github.ref_type == 'tag' && vars.PUBLISH_MARKETPLACE == 'true'
     runs-on: ubuntu-24.04
     env:
       VSCE_PAT: ${{ secrets.VSCE_PAT }}

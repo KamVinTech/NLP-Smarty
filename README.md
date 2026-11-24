@@ -387,7 +387,7 @@ Pushing the tag runs [`release.yml`](.github/workflows/release.yml): verify (ver
 
 One-time setup for publishing (nothing publishes until you do these):
 
-- **VS Code Marketplace:** the publisher ID must equal `publisher` in `package.json` (`KamVinTech-contextgate`) and is permanent once created. Add a credential as the repository secret `VSCE_PAT` (scope *Marketplace > Manage*). Global Azure DevOps tokens retire on 2026-12-01; later releases need Microsoft Entra ID (`vsce publish --azure-credential`). Without a credential the Marketplace step is skipped and the `.vsix` is still attached to the release.
+- **VS Code Marketplace:** the publisher ID must equal `publisher` in `package.json` (`KamVinTech-contextgate`) and is permanent once created. Add a credential as the repository secret `VSCE_PAT` (scope *Marketplace > Manage*). Global Azure DevOps tokens retire on 2026-12-01; later releases need Microsoft Entra ID (`vsce publish --azure-credential`). The Marketplace step is **opt-in**: it runs only when the repository variable `PUBLISH_MARKETPLACE=true` is set (and `VSCE_PAT` exists); otherwise it is skipped and the `.vsix` is still attached to the GitHub Release.
 - **PyPI (opt-in):** the distribution is `contextgate-core`. One-time setup on pypi.org: *Publishing → Add a pending publisher* (project `contextgate-core`, owner `KamVinTech`, repository `NLP-Smarty`, workflow `release.yml`, environment `pypi`); create the GitHub environment `pypi`; set the repository variable `PUBLISH_PYPI=true`. No API token is stored anywhere. The first tag after that publishes it.
 
 ## Privacy and license

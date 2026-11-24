@@ -264,3 +264,12 @@ def test_the_bridge_really_runs_from_a_bare_copy_of_the_allowlisted_files(tmp_pa
     assert [o["id"] for o in out] == ["init", "1", "2"] and out[1]["message"] == "pong" and out[2]["status"] == "OK"
     produced = sorted(str(q.relative_to(tmp_path)) for q in tmp_path.rglob("*") if q.is_file() and "__pycache__" not in q.parts)
     assert produced == sorted(allow)  # no log file or any other stray output
+
+
+def test_marketplace_and_pypi_publishing_are_both_opt_in_on_a_tag():
+    """A tag must never publish somewhere the maintainer did not switch on (PyPI names and Marketplace versions are permanent)."""
+    text = open(os.path.join(ROOT, ".github", "workflows", "release.yml"), encoding="utf-8").read()
+    mp = text[text.index("  publish-marketplace:"):]
+    assert "vars.PUBLISH_MARKETPLACE == 'true'" in mp.split("steps:")[0]
+    pypi = text[text.index("  publish-pypi:"):text.index("  publish-marketplace:")]
+    assert "vars.PUBLISH_PYPI == 'true'" in pypi.split("steps:")[0]
