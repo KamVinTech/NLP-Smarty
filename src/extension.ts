@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
+import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as readline from 'readline';
@@ -82,8 +83,17 @@ interface BridgeResponse {
 /**
  * Resolves the best Python interpreter in the workspace (`NLP-start/bin/python`, `.venv/bin/python`, or `python3`).
  */
+/**
+ * Optional file copy of the audit log. The audit blocks contain previews of your prompts, so nothing is written to disk
+ * unless you set `contextGate.auditLogFile`; the live stream in the ContextGate Output panel is always available.
+ */
+function auditLogPath(): string {
+    const configured = vscode.workspace.getConfiguration('contextGate').get<string>('auditLogFile', '').trim();
+    return configured.startsWith('~') ? path.join(os.homedir(), configured.slice(1)) : configured;
+}
+
 function resolvePythonPath(engineDir: string): string {
-    const config = vscode.workspace.getConfiguration('nlpSmarty');
+    const config = vscode.workspace.getConfiguration('contextGate');
     const configured = config.get<string>('pythonPath', 'python3');
     if (configured && configured !== 'python3') {
         return configured;
@@ -105,14 +115,14 @@ function resolvePythonPath(engineDir: string): string {
 /**
  * Virtual Document Provider so we can open native VS Code side-by-side red/green Diff views (`vscode.diff`).
  */
-class SmartyVirtualDocProvider implements vscode.TextDocumentContentProvider {
+class ContextGateDocProvider implements vscode.TextDocumentContentProvider {
     private _onDidChange = new vscode.EventEmitter<vscode.Uri>();
     readonly onDidChange = this._onDidChange.event;
     private docs = new Map<string, string>();
 
     public setDoc(key: string, content: string): vscode.Uri {
         this.docs.set(key, content);
-        const uri = vscode.Uri.parse(`nlp-smarty-diff:${key}`);
+        const uri = vscode.Uri.parse(`contextgate-diff:${key}`);
         this._onDidChange.fire(uri);
         return uri;
     }
@@ -125,9 +135,9 @@ class SmartyVirtualDocProvider implements vscode.TextDocumentContentProvider {
 /**
  * Persistent Python Sidecar Client (`bridge_server.py`).
  * Streams every optimization request, response, and stage-by-stage stderr log to BOTH
- * the OutputChannel (`NLP-Smarty Optimizer`) and `console.log` (Main Window Debug Console).
+ * the OutputChannel (`ContextGate`) and `console.log` (Main Window Debug Console).
  */
-class SmartyPythonBridge {
+class ContextGateBridge {
     private proc: ChildProcessWithoutNullStreams | null = null;
     private pending = new Map<string, { resolve: (res: BridgeResponse) => void; reject: (err: Error) => void }>();
     private reqCounter = 0;
@@ -140,7 +150,7 @@ class SmartyPythonBridge {
     }
 
     public getEngineDir(): string {
-        const config = vscode.workspace.getConfiguration('nlpSmarty');
+        const config = vscode.workspace.getConfiguration('contextGate');
         return config.get<string>('engineDirectory', '') || this.context.extensionPath;
     }
 
@@ -148,18 +158,19 @@ class SmartyPythonBridge {
         if (this.proc && !this.proc.killed) {
             return;
         }
-        const config = vscode.workspace.getConfiguration('nlpSmarty');
+        const config = vscode.workspace.getConfiguration('contextGate');
         const engineDir = this.getEngineDir();
         const pythonPath = resolvePythonPath(engineDir);
         const scriptPath = path.join(engineDir, 'bridge_server.py');
 
-        this.logBoth(`[NLP-Smarty] Spawning sidecar: ${pythonPath} ${scriptPath}`);
+        this.logBoth(`[ContextGate] Spawning sidecar: ${pythonPath} ${scriptPath}`);
         this.proc = spawn(pythonPath, ['-u', scriptPath], {
             cwd: engineDir,
             env: {
                 ...process.env,
                 HF_TOKEN: config.get<string>('huggingFaceToken', '') || process.env.HF_TOKEN || '',
                 HF_MODEL_ID: config.get<string>('huggingFaceModel', 'Qwen/Qwen2.5-Coder-32B-Instruct'),
+                SMARTY_AUDIT_LOG: auditLogPath(),
             },
         });
 
@@ -168,7 +179,7 @@ class SmartyPythonBridge {
             try {
                 const msg: BridgeResponse = JSON.parse(line);
                 if (msg.id === 'init') {
-                    this.logBoth('[NLP-Smarty] Python sidecar READY.');
+                    this.logBoth('[ContextGate] Python sidecar READY.');
                     return;
                 }
                 const handler = this.pending.get(msg.id);
@@ -177,7 +188,7 @@ class SmartyPythonBridge {
                     handler.resolve(msg);
                 }
             } catch (err) {
-                this.logBoth(`[NLP-Smarty stdout] ${line}`);
+                this.logBoth(`[ContextGate stdout] ${line}`);
             }
         });
 
@@ -189,7 +200,7 @@ class SmartyPythonBridge {
         });
 
         this.proc.on('exit', (code) => {
-            this.logBoth(`[NLP-Smarty] Sidecar exited with code ${code}`);
+            this.logBoth(`[ContextGate] Sidecar exited with code ${code}`);
             this.proc = null;
         });
     }
@@ -199,7 +210,7 @@ class SmartyPythonBridge {
         const id = `req_${++this.reqCounter}_${Date.now()}`;
         const payload = JSON.stringify({ id, command, ...params }) + '\n';
 
-        const config = vscode.workspace.getConfiguration('nlpSmarty');
+        const config = vscode.workspace.getConfiguration('contextGate');
         if (config.get<boolean>('autoShowLogs', true)) {
             this.outputChannel.show(true); // Preserve editor focus while popping open Output panel
         }
@@ -228,7 +239,7 @@ class SmartyPythonBridge {
  * Updates live whenever the user optimizes a prompt or file so they always see
  * Old vs. New Prompt, Per-Section Token Savings, Word-Level Diff, and Stage Logs alongside their file.
  */
-class SmartyInspectorPanel {
+class ContextGateInspectorPanel {
     private static currentPanel: vscode.WebviewPanel | undefined;
 
     public static showOrUpdate(
@@ -238,28 +249,28 @@ class SmartyInspectorPanel {
         sourceLabel: string,
         onAction: (action: string) => void
     ): void {
-        const title = `Smarty Stats: -${t.payload_token_savings_pct}% Payload | -${t.query_token_savings_pct}% Query (${t.latency_ms}ms)`;
-        if (SmartyInspectorPanel.currentPanel) {
-            SmartyInspectorPanel.currentPanel.title = title;
-            SmartyInspectorPanel.currentPanel.reveal(vscode.ViewColumn.Beside, true);
+        const title = `ContextGate Stats: -${t.payload_token_savings_pct}% Payload | -${t.query_token_savings_pct}% Query (${t.latency_ms}ms)`;
+        if (ContextGateInspectorPanel.currentPanel) {
+            ContextGateInspectorPanel.currentPanel.title = title;
+            ContextGateInspectorPanel.currentPanel.reveal(vscode.ViewColumn.Beside, true);
         } else {
-            SmartyInspectorPanel.currentPanel = vscode.window.createWebviewPanel(
-                'nlpSmartyTelemetry',
+            ContextGateInspectorPanel.currentPanel = vscode.window.createWebviewPanel(
+                'contextGateTelemetry',
                 title,
                 { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
                 { enableScripts: true, retainContextWhenHidden: true }
             );
-            SmartyInspectorPanel.currentPanel.onDidDispose(() => {
-                SmartyInspectorPanel.currentPanel = undefined;
+            ContextGateInspectorPanel.currentPanel.onDidDispose(() => {
+                ContextGateInspectorPanel.currentPanel = undefined;
             });
-            SmartyInspectorPanel.currentPanel.webview.onDidReceiveMessage((msg) => {
+            ContextGateInspectorPanel.currentPanel.webview.onDidReceiveMessage((msg) => {
                 if (msg && msg.action) {
                     onAction(msg.action);
                 }
             });
         }
 
-        SmartyInspectorPanel.currentPanel.webview.html = buildLiveComparisonHtml(
+        ContextGateInspectorPanel.currentPanel.webview.html = buildLiveComparisonHtml(
             rawPrompt,
             compiledPayload,
             t,
@@ -492,7 +503,7 @@ function buildLiveComparisonHtml(
 <body>
   <div class="header-bar">
     <div>
-      <div class="header-title">NLP-Smarty Live Optimization &amp; Telemetry Inspector</div>
+      <div class="header-title">ContextGate Live Optimization &amp; Telemetry Inspector</div>
       <div class="header-sub">Source: ${escapeHtml(sourceLabel)} &bull; Strategy: ${escapeHtml(t.pruning_strategy_used)} &bull; SimHash: ${escapeHtml(t.simhash_signature)}</div>
     </div>
     <div class="btn-group">
@@ -625,13 +636,13 @@ function buildLiveComparisonHtml(
  * or falls back to the HuggingFace `app.py` bridge (`compare_hf`).
  */
 async function runSideBySideComparison(
-    bridge: SmartyPythonBridge,
+    bridge: ContextGateBridge,
     rawPrompt: string,
     workspaceFiles: Array<{ path: string; content: string }>,
     conversationHistory: Array<{ role: string; content: string }>,
     token?: vscode.CancellationToken
 ): Promise<BridgeResponse> {
-    const config = vscode.workspace.getConfiguration('nlpSmarty');
+    const config = vscode.workspace.getConfiguration('contextGate');
     const preferredBackend = config.get<string>('downstreamBackend', 'auto');
     const baseParams = {
         text: rawPrompt,
@@ -763,18 +774,18 @@ async function resolvePromptAndWorkspaceContext(
 }
 
 export function activate(context: vscode.ExtensionContext) {
-    const outputChannel = vscode.window.createOutputChannel('NLP-Smarty Optimizer');
-    const bridge = new SmartyPythonBridge(context, outputChannel);
-    const diffProvider = new SmartyVirtualDocProvider();
+    const outputChannel = vscode.window.createOutputChannel('ContextGate');
+    const bridge = new ContextGateBridge(context, outputChannel);
+    const diffProvider = new ContextGateDocProvider();
 
     context.subscriptions.push(
-        vscode.workspace.registerTextDocumentContentProvider('nlp-smarty-diff', diffProvider)
+        vscode.workspace.registerTextDocumentContentProvider('contextgate-diff', diffProvider)
     );
 
     const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    statusBar.text = '$(zap) NLP-Smarty Ready';
+    statusBar.text = '$(zap) ContextGate Ready';
     statusBar.tooltip = 'Click to optimize active file/selection and view Old vs. New Prompt Stats';
-    statusBar.command = 'nlpSmarty.optimizeSelection';
+    statusBar.command = 'contextGate.optimizeSelection';
     statusBar.show();
 
     let lastRawPrompt = '';
@@ -815,7 +826,7 @@ export function activate(context: vscode.ExtensionContext) {
             'vscode.diff',
             leftUri,
             rightUri,
-            `NLP-Smarty Diff: Old (${t.raw_token_count}w) ↔ New (${t.optimized_token_count}w, -${t.query_token_savings_pct}%)`,
+            `ContextGate Diff: Old (${t.raw_token_count}w) ↔ New (${t.optimized_token_count}w, -${t.query_token_savings_pct}%)`,
             { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false }
         );
     };
@@ -828,8 +839,8 @@ export function activate(context: vscode.ExtensionContext) {
             await openNativeDiffView(lastRawPrompt, lastCompiledPayload, lastTrace);
         } else if (action === 'showLogs') {
             outputChannel.show(false);
-            const logFile = path.join(bridge.getEngineDir(), '.nlp_smarty_optimization.log');
-            if (fs.existsSync(logFile)) {
+            const logFile = auditLogPath();
+            if (logFile && fs.existsSync(logFile)) {
                 const doc = await vscode.workspace.openTextDocument(logFile);
                 await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false });
             }
@@ -837,18 +848,18 @@ export function activate(context: vscode.ExtensionContext) {
             await vscode.env.clipboard.writeText(lastCompiledPayload);
             vscode.window.showInformationMessage('Copied compiled XML payload to clipboard!');
         } else if (action === 'runAB') {
-            await vscode.commands.executeCommand('nlpSmarty.compareSideBySide');
+            await vscode.commands.executeCommand('contextGate.compareSideBySide');
         }
     };
 
     // ── Command 1: Optimize Prompt / Active File & Show Side-by-Side Comparison (`Cmd+Alt+O`) ──
-    const optimizeCmd = vscode.commands.registerCommand('nlpSmarty.optimizeSelection', async () => {
+    const optimizeCmd = vscode.commands.registerCommand('contextGate.optimizeSelection', async () => {
         const resolved = await resolvePromptAndWorkspaceContext(vscode.window.activeTextEditor, true);
         if (!resolved) {
             return;
         }
 
-        const config = vscode.workspace.getConfiguration('nlpSmarty');
+        const config = vscode.workspace.getConfiguration('contextGate');
         const res = await bridge.request('optimize', {
             text: resolved.rawPrompt,
             workspace_files: resolved.workspaceFiles,
@@ -857,7 +868,7 @@ export function activate(context: vscode.ExtensionContext) {
         });
 
         if (!res.ok || !res.trace) {
-            vscode.window.showErrorMessage(`NLP-Smarty Error: ${res.error || res.clarification_request || 'Unknown error'}`);
+            vscode.window.showErrorMessage(`ContextGate Error: ${res.error || res.clarification_request || 'Unknown error'}`);
             return;
         }
 
@@ -866,11 +877,11 @@ export function activate(context: vscode.ExtensionContext) {
         lastCompiledPayload = res.payload || '';
         lastTrace = t;
 
-        statusBar.text = `$(zap) Smarty: ${t.raw_token_count}→${t.optimized_token_count}w (-${t.query_token_savings_pct}%) | Payload -${t.payload_token_savings_pct}% (${t.latency_ms}ms)`;
+        statusBar.text = `$(zap) ContextGate: ${t.raw_token_count}→${t.optimized_token_count}w (-${t.query_token_savings_pct}%) | Payload -${t.payload_token_savings_pct}% (${t.latency_ms}ms)`;
         await vscode.env.clipboard.writeText(res.payload || '');
 
         // Always open the side-by-side Live Comparison & Stats Webview alongside the file
-        SmartyInspectorPanel.showOrUpdate(
+        ContextGateInspectorPanel.showOrUpdate(
             resolved.rawPrompt,
             res.payload || '',
             t,
@@ -879,13 +890,13 @@ export function activate(context: vscode.ExtensionContext) {
         );
     });
 
-    // ── Command 2: Open Native VS Code Red/Green Diff Editor (`nlpSmarty.openPromptDiff`) ──
-    const diffCmd = vscode.commands.registerCommand('nlpSmarty.openPromptDiff', async () => {
+    // ── Command 2: Open Native VS Code Red/Green Diff Editor (`contextGate.openPromptDiff`) ──
+    const diffCmd = vscode.commands.registerCommand('contextGate.openPromptDiff', async () => {
         const resolved = await resolvePromptAndWorkspaceContext(vscode.window.activeTextEditor, true);
         if (!resolved) {
             return;
         }
-        const config = vscode.workspace.getConfiguration('nlpSmarty');
+        const config = vscode.workspace.getConfiguration('contextGate');
         const res = await bridge.request('optimize', {
             text: resolved.rawPrompt,
             workspace_files: resolved.workspaceFiles,
@@ -893,7 +904,7 @@ export function activate(context: vscode.ExtensionContext) {
             max_total_tokens: config.get<number>('maxTokenBudget', 512),
         });
         if (!res.ok || !res.trace) {
-            vscode.window.showErrorMessage(`NLP-Smarty Error: ${res.error || res.clarification_request}`);
+            vscode.window.showErrorMessage(`ContextGate Error: ${res.error || res.clarification_request}`);
             return;
         }
         lastRawPrompt = resolved.rawPrompt;
@@ -903,7 +914,7 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     // ── Command 3: Side-by-Side Raw vs. Optimized Downstream Agent Comparison (`Cmd+Alt+C`) ──
-    const compareCmd = vscode.commands.registerCommand('nlpSmarty.compareSideBySide', async () => {
+    const compareCmd = vscode.commands.registerCommand('contextGate.compareSideBySide', async () => {
         const resolved = await resolvePromptAndWorkspaceContext(vscode.window.activeTextEditor, true);
         if (!resolved) {
             return;
@@ -912,7 +923,7 @@ export function activate(context: vscode.ExtensionContext) {
         await vscode.window.withProgress(
             {
                 location: vscode.ProgressLocation.Notification,
-                title: 'NLP-Smarty: Running Raw vs. Optimized Prompt on Downstream Agent...',
+                title: 'ContextGate: Running Raw vs. Optimized Prompt on Downstream Agent...',
                 cancellable: true,
             },
             async (_progress, token) => {
@@ -924,20 +935,20 @@ export function activate(context: vscode.ExtensionContext) {
                     token
                 );
                 if (!cmp.ok || !cmp.trace) {
-                    vscode.window.showErrorMessage(`NLP-Smarty Error: ${cmp.error || cmp.clarification_request}`);
+                    vscode.window.showErrorMessage(`ContextGate Error: ${cmp.error || cmp.clarification_request}`);
                     return;
                 }
                 lastRawPrompt = resolved.rawPrompt;
                 lastCompiledPayload = cmp.optimized_payload || '';
                 lastTrace = cmp.trace;
-                statusBar.text = `$(zap) Smarty A/B: ${cmp.raw_audit?.compliance_score ?? 0}% vs ${cmp.optimized_audit?.compliance_score ?? 100}% compliance`;
+                statusBar.text = `$(zap) ContextGate A/B: ${cmp.raw_audit?.compliance_score ?? 0}% vs ${cmp.optimized_audit?.compliance_score ?? 100}% compliance`;
                 renderSideBySideWebview(resolved.rawPrompt, cmp);
             }
         );
     });
 
     // ── Command 4: Inline Compress Selection (`Cmd+Alt+I`) — Now ALSO opens the Comparison View Alongside! ──
-    const inlineReplaceCmd = vscode.commands.registerCommand('nlpSmarty.inlineCompress', async () => {
+    const inlineReplaceCmd = vscode.commands.registerCommand('contextGate.inlineCompress', async () => {
         const editor = vscode.window.activeTextEditor;
         if (!editor) {
             return;
@@ -972,10 +983,10 @@ export function activate(context: vscode.ExtensionContext) {
             }
         });
 
-        statusBar.text = `$(zap) Smarty: ${t.raw_token_count} → ${t.optimized_token_count} words (-${t.query_token_savings_pct}%, ${t.latency_ms}ms)`;
+        statusBar.text = `$(zap) ContextGate: ${t.raw_token_count} → ${t.optimized_token_count} words (-${t.query_token_savings_pct}%, ${t.latency_ms}ms)`;
 
         // Open the side-by-side comparison inspector alongside so the user sees Old vs. New stats!
-        SmartyInspectorPanel.showOrUpdate(
+        ContextGateInspectorPanel.showOrUpdate(
             rawText,
             res.payload,
             t,
@@ -984,19 +995,19 @@ export function activate(context: vscode.ExtensionContext) {
         );
     });
 
-    // ── Command 5: Show Accurate Optimization Logs (`nlpSmarty.showLogs`) ──
-    const showLogsCmd = vscode.commands.registerCommand('nlpSmarty.showLogs', async () => {
+    // ── Command 5: Show Accurate Optimization Logs (`contextGate.showLogs`) ──
+    const showLogsCmd = vscode.commands.registerCommand('contextGate.showLogs', async () => {
         outputChannel.show(false);
-        const logFile = path.join(bridge.getEngineDir(), '.nlp_smarty_optimization.log');
-        if (fs.existsSync(logFile)) {
+        const logFile = auditLogPath();
+        if (logFile && fs.existsSync(logFile)) {
             const doc = await vscode.workspace.openTextDocument(logFile);
             await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false });
         }
     });
 
-    // ── Auto-Optimize on Save for `.prompt` files or when `nlpSmarty.optimizeOnSave` is enabled ──
+    // ── Auto-Optimize on Save for `.prompt` files or when `contextGate.optimizeOnSave` is enabled ──
     const saveListener = vscode.workspace.onDidSaveTextDocument(async (doc) => {
-        const config = vscode.workspace.getConfiguration('nlpSmarty');
+        const config = vscode.workspace.getConfiguration('contextGate');
         const autoOnSave = config.get<boolean>('optimizeOnSave', false);
         const isPromptExt = doc.fileName.endsWith('.prompt') || doc.fileName.endsWith('.smarty');
         if (!autoOnSave && !isPromptExt) {
@@ -1015,7 +1026,7 @@ export function activate(context: vscode.ExtensionContext) {
             lastRawPrompt = rawText;
             lastCompiledPayload = res.payload || '';
             lastTrace = res.trace;
-            SmartyInspectorPanel.showOrUpdate(
+            ContextGateInspectorPanel.showOrUpdate(
                 rawText,
                 res.payload || '',
                 res.trace,
@@ -1025,10 +1036,10 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
-    // ── Surface 6: Native VS Code Chat Participant (`@smarty` with `/optimize` and `/compare`) ──
+    // ── Surface 6: Native VS Code Chat Participant (`@contextgate` with `/optimize` and `/compare`) ──
     if ('chat' in vscode) {
         const participant = vscode.chat.createChatParticipant(
-            'nlp-smarty.participant',
+            'contextgate.participant',
             async (request, chatContext, stream, token) => {
                 const history = chatContext.history.map((turn) => {
                     if (turn instanceof vscode.ChatRequestTurn) {
@@ -1066,11 +1077,11 @@ export function activate(context: vscode.ExtensionContext) {
                     lastCompiledPayload = res.payload || '';
                     lastTrace = t;
 
-                    SmartyInspectorPanel.showOrUpdate(
+                    ContextGateInspectorPanel.showOrUpdate(
                         request.prompt,
                         res.payload || '',
                         t,
-                        '@smarty /optimize',
+                        '@contextgate /optimize',
                         handleInspectorAction
                     );
 
@@ -1103,11 +1114,11 @@ export function activate(context: vscode.ExtensionContext) {
                 lastCompiledPayload = cmp.optimized_payload || '';
                 lastTrace = t;
 
-                SmartyInspectorPanel.showOrUpdate(
+                ContextGateInspectorPanel.showOrUpdate(
                     request.prompt,
                     cmp.optimized_payload || '',
                     t,
-                    '@smarty /compare',
+                    '@contextgate /compare',
                     handleInspectorAction
                 );
 
@@ -1115,8 +1126,8 @@ export function activate(context: vscode.ExtensionContext) {
                 const optScore = cmp.optimized_audit?.compliance_score ?? 100;
 
                 stream.markdown(
-                    `### NLP-Smarty A/B Downstream Agent Comparison (\`${cmp.backend}\`)\n\n` +
-                    `| Metric | Raw Unoptimized Prompt | NLP-Smarty Compiled Prompt | Delta |\n` +
+                    `### ContextGate A/B Downstream Agent Comparison (\`${cmp.backend}\`)\n\n` +
+                    `| Metric | Raw Unoptimized Prompt | ContextGate Compiled Prompt | Delta |\n` +
                     `| :--- | :--- | :--- | :--- |\n` +
                     `| **Query Words / BPE** | \`${t.raw_token_count}w (${t.raw_bpe_tokens} BPE)\` | \`${t.optimized_token_count}w (${t.optimized_bpe_tokens} BPE)\` | **-${t.query_token_savings_pct}% words** |\n` +
                     `| **Full Payload Tokens** | \`${cmp.raw_input_tokens}\` | \`${cmp.optimized_input_tokens}\` | **-${t.payload_token_savings_pct}%** |\n` +
@@ -1149,8 +1160,8 @@ export function activate(context: vscode.ExtensionContext) {
 function renderSideBySideWebview(rawPrompt: string, cmp: BridgeResponse) {
     const t = cmp.trace!;
     const panel = vscode.window.createWebviewPanel(
-        'nlpSmartyABCompare',
-        `NLP-Smarty A/B: ${cmp.raw_audit?.compliance_score ?? 0}% vs ${cmp.optimized_audit?.compliance_score ?? 100}%`,
+        'contextGateABCompare',
+        `ContextGate A/B: ${cmp.raw_audit?.compliance_score ?? 0}% vs ${cmp.optimized_audit?.compliance_score ?? 100}%`,
         vscode.ViewColumn.Beside,
         { enableScripts: false }
     );
@@ -1203,7 +1214,7 @@ function renderSideBySideWebview(rawPrompt: string, cmp: BridgeResponse) {
       <pre>${escapeHtml(cmp.raw_response || '')}</pre>
     </div>
     <div class="card">
-      <h3>NLP-Smarty Optimized Agent Output (${cmp.optimized_audit?.compliance_score ?? 100}/100)</h3>
+      <h3>ContextGate Optimized Agent Output (${cmp.optimized_audit?.compliance_score ?? 100}/100)</h3>
       <ul>${renderChecks(cmp.optimized_audit)}</ul>
       <pre>${escapeHtml(cmp.optimized_response || '')}</pre>
     </div>

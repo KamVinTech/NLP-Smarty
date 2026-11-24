@@ -52,7 +52,7 @@ def _emit_stderr_audit_log(req_id: str, cmd: str, raw_prompt: str, trace_dict: d
         comp_preview = comp_preview[:180] + "... [truncated in log preview]"
 
     lines = [
-        f"\n================ [NLP-Smarty Audit Log | {ts} | req={req_id} | cmd={cmd}] ================",
+        f"\n================ [ContextGate Audit Log | {ts} | req={req_id} | cmd={cmd}] ================",
         f"  RAW PROMPT      : {raw_preview!r}",
         f"  COMPRESSED CORE : {comp_preview!r}",
         f"  INTENT & MODE   : {trace_dict.get('detected_intent')} (conf={trace_dict.get('intent_confidence')}, intensity={trace_dict.get('compression_intensity_used')})",
@@ -262,7 +262,7 @@ def handle_request(req_data: dict[str, Any]) -> dict[str, Any]:
 
     if cmd == "clear_cache":
         PROMPT_CACHE.clear()
-        sys.stderr.write(f"[NLP-Smarty Audit Log] Cache cleared (req={req_id})\n")
+        sys.stderr.write(f"[ContextGate Audit Log] Cache cleared (req={req_id})\n")
         sys.stderr.flush()
         return {"id": req_id, "ok": True, "message": "Cache cleared"}
 
@@ -324,7 +324,7 @@ def process_line(line: str) -> dict[str, Any]:
     except ProtocolError as exc:
         return error_response(req_id, exc.code, exc.message)
     except Exception as exc:
-        sys.stderr.write(f"[NLP-Smarty ERROR | req={req_id}] {exc}\n{traceback.format_exc()}\n")
+        sys.stderr.write(f"[ContextGate ERROR | req={req_id}] {exc}\n{traceback.format_exc()}\n")
         sys.stderr.flush()
         return error_response(req_id, E_INTERNAL, str(exc), traceback=traceback.format_exc())
 

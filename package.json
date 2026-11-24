@@ -1,6 +1,6 @@
 {
-  "name": "nlp-smarty-vscode",
-  "displayName": "NLP-Smarty Deterministic Prompt Optimizer",
+  "name": "contextgate",
+  "displayName": "ContextGate",
   "description": "Zero-LLM prompt compression, MMR context pruning, tool schema compression, live Old vs. New prompt stats, and side-by-side Raw vs. Optimized LLM evaluation.",
   "publisher": "KamVinTech",
   "license": "MIT",
@@ -31,64 +31,64 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onChatParticipant:nlp-smarty.participant"
+    "onChatParticipant:contextgate.participant"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "nlpSmarty.optimizeSelection",
-        "title": "NLP-Smarty: Optimize Prompt / File & Show Old vs. New Stats Alongside",
+        "command": "contextGate.optimizeSelection",
+        "title": "ContextGate: Optimize Prompt / File & Show Old vs. New Stats Alongside",
         "icon": "$(zap)"
       },
       {
-        "command": "nlpSmarty.openPromptDiff",
-        "title": "NLP-Smarty: Open Native Side-by-Side Diff (Old vs. New Prompt)",
+        "command": "contextGate.openPromptDiff",
+        "title": "ContextGate: Open Native Side-by-Side Diff (Old vs. New Prompt)",
         "icon": "$(diff)"
       },
       {
-        "command": "nlpSmarty.compareSideBySide",
-        "title": "NLP-Smarty: Compare Raw vs. Optimized LLM Output (Side-by-Side)",
+        "command": "contextGate.compareSideBySide",
+        "title": "ContextGate: Compare Raw vs. Optimized LLM Output (Side-by-Side)",
         "icon": "$(split-horizontal)"
       },
       {
-        "command": "nlpSmarty.inlineCompress",
-        "title": "NLP-Smarty: Compress Prompt Inline & Show Stats Alongside",
+        "command": "contextGate.inlineCompress",
+        "title": "ContextGate: Compress Prompt Inline & Show Stats Alongside",
         "icon": "$(Sparkle)"
       },
       {
-        "command": "nlpSmarty.showLogs",
-        "title": "NLP-Smarty: Show Optimization Audit Logs",
+        "command": "contextGate.showLogs",
+        "title": "ContextGate: Show Optimization Audit Logs",
         "icon": "$(output)"
       }
     ],
     "keybindings": [
       {
-        "command": "nlpSmarty.optimizeSelection",
+        "command": "contextGate.optimizeSelection",
         "key": "ctrl+alt+o",
         "mac": "cmd+alt+o",
         "when": "editorTextFocus"
       },
       {
-        "command": "nlpSmarty.openPromptDiff",
+        "command": "contextGate.openPromptDiff",
         "key": "ctrl+alt+d",
         "mac": "cmd+alt+d",
         "when": "editorTextFocus"
       },
       {
-        "command": "nlpSmarty.compareSideBySide",
+        "command": "contextGate.compareSideBySide",
         "key": "ctrl+alt+c",
         "mac": "cmd+alt+c",
         "when": "editorTextFocus"
       },
       {
-        "command": "nlpSmarty.inlineCompress",
+        "command": "contextGate.inlineCompress",
         "key": "ctrl+alt+i",
         "mac": "cmd+alt+i",
         "when": "editorTextFocus"
       },
       {
-        "command": "nlpSmarty.showLogs",
+        "command": "contextGate.showLogs",
         "key": "ctrl+alt+l",
         "mac": "cmd+alt+l"
       }
@@ -96,46 +96,46 @@
     "menus": {
       "editor/title": [
         {
-          "command": "nlpSmarty.optimizeSelection",
+          "command": "contextGate.optimizeSelection",
           "group": "navigation@1"
         },
         {
-          "command": "nlpSmarty.openPromptDiff",
+          "command": "contextGate.openPromptDiff",
           "group": "navigation@2"
         },
         {
-          "command": "nlpSmarty.showLogs",
+          "command": "contextGate.showLogs",
           "group": "navigation@3"
         }
       ],
       "editor/context": [
         {
-          "command": "nlpSmarty.optimizeSelection",
+          "command": "contextGate.optimizeSelection",
           "group": "navigation@1"
         },
         {
-          "command": "nlpSmarty.openPromptDiff",
+          "command": "contextGate.openPromptDiff",
           "group": "navigation@2"
         },
         {
-          "command": "nlpSmarty.compareSideBySide",
+          "command": "contextGate.compareSideBySide",
           "group": "navigation@3"
         },
         {
-          "command": "nlpSmarty.inlineCompress",
+          "command": "contextGate.inlineCompress",
           "group": "navigation@4"
         },
         {
-          "command": "nlpSmarty.showLogs",
+          "command": "contextGate.showLogs",
           "group": "navigation@5"
         }
       ]
     },
     "chatParticipants": [
       {
-        "id": "nlp-smarty.participant",
-        "name": "smarty",
-        "fullName": "NLP-Smarty Optimizer",
+        "id": "contextgate.participant",
+        "name": "contextgate",
+        "fullName": "ContextGate",
         "description": "Compare Raw vs. Deterministically Optimized prompts on real workspace files via Copilot (vscode.lm) or HuggingFace (app.py).",
         "isSticky": true,
         "commands": [
@@ -151,29 +151,29 @@
       }
     ],
     "configuration": {
-      "title": "NLP-Smarty Optimizer",
+      "title": "ContextGate",
       "properties": {
-        "nlpSmarty.pythonPath": {
+        "contextGate.pythonPath": {
           "type": "string",
           "default": "python3",
           "description": "Path to the Python interpreter (auto-detects NLP-start/bin/python or .venv/bin/python if left as python3)."
         },
-        "nlpSmarty.engineDirectory": {
+        "contextGate.engineDirectory": {
           "type": "string",
           "default": "",
           "description": "Path to directory containing bridge_server.py, app.py, and pipeline.py (defaults to extension root)."
         },
-        "nlpSmarty.autoShowLogs": {
+        "contextGate.autoShowLogs": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically reveal the NLP-Smarty Optimizer Output panel when an optimization runs."
+          "description": "Automatically reveal the ContextGate Output panel when an optimization runs."
         },
-        "nlpSmarty.optimizeOnSave": {
+        "contextGate.optimizeOnSave": {
           "type": "boolean",
           "default": false,
           "description": "Automatically update the alongside Old vs. New Prompt Comparison Inspector whenever a file is saved."
         },
-        "nlpSmarty.downstreamBackend": {
+        "contextGate.downstreamBackend": {
           "type": "string",
           "enum": [
             "auto",
@@ -183,17 +183,17 @@
           "default": "auto",
           "description": "Downstream LLM backend for side-by-side comparison ('auto' uses vscode.lm Copilot if available, else HuggingFace app.py)."
         },
-        "nlpSmarty.huggingFaceToken": {
+        "contextGate.huggingFaceToken": {
           "type": "string",
           "default": "",
           "description": "Optional HuggingFace API token (HF_TOKEN) when using the HuggingFace app.py backend."
         },
-        "nlpSmarty.huggingFaceModel": {
+        "contextGate.huggingFaceModel": {
           "type": "string",
           "default": "Qwen/Qwen2.5-Coder-32B-Instruct",
           "description": "HuggingFace model ID for app.py downstream evaluation."
         },
-        "nlpSmarty.compressionIntensity": {
+        "contextGate.compressionIntensity": {
           "type": "string",
           "enum": [
             "AUTO",
@@ -204,10 +204,15 @@
           "default": "AUTO",
           "description": "Compression intensity mode."
         },
-        "nlpSmarty.maxTokenBudget": {
+        "contextGate.maxTokenBudget": {
           "type": "number",
           "default": 512,
           "description": "Maximum total token budget for the compiled prompt payload."
+        },
+        "contextGate.auditLogFile": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional file that receives a copy of the audit log. **The log contains previews of your prompts**, so nothing is written to disk unless you set this. The live stream in the ContextGate Output panel is always available."
         }
       }
     }
