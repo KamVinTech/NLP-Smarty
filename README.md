@@ -92,15 +92,37 @@ Optional extras for the full optimizer: `pip install spacy rank_bm25 flashtext s
 ## Use as a library
 
 ```python
-from contextgate_core import gate_text, gate_request, optimize, estimate_tokens
+from contextgate_core import RawRequest, estimate_tokens, gate_request, gate_text, optimize
 
-text, ok = gate_text("Could you please basically fix `get_user()` in order to be safe; do not use recursion.", level=2)
-# ok=False means verification failed and `text` is the ORIGINAL unchanged
+# 1. Text: deterministic prose compression. Level 1-3 or a profile name ("strict", "balanced", "aggressive").
+text, ok = gate_text("Could you please basically fix `get_user()`, do not use recursion.", "balanced")
+assert ok and text == "Fix `get_user()`, do not use recursion."   # ok=False means: `text` is the ORIGINAL, unchanged
+
+# 2. Requests: OpenAI-compatible or Anthropic Messages bodies (auto-detected). Never raises, never larger.
+body = {"model": "m", "messages": [{"role": "user", "content": "Could you please basically explain this, in order to be safe?"}]}
+result = gate_request(body, "strict")
+print(result.body, result.saved, result.applied, result.protected_ok)   # estimated tokens saved; result.error names a failure
+
+# 3. The 9-step prompt compiler: returns a strict XML payload for a downstream agent.
+compiled = optimize(RawRequest(text="Could you please write a Python function to reverse a string without using slicing?"))
+print(compiled.status, compiled.trace.query_token_savings_pct)          # "OK" | "NEEDS_CLARIFICATION" | "INSUFFICIENT_CONTEXT"
+
+print(estimate_tokens("hello world"))                                    # an estimate (median ~12% over cl100k_base), not a provider count
 ```
 
-`gate_text` / `gate_request` (OpenAI and Anthropic request bodies) are the zero-dependency gate; `optimize` is the 9-step prompt compiler.
-`import contextgate_core` is instant: the public names load lazily. The PyPI distribution is `contextgate-core` (the unrelated `contextgate` on PyPI also installs an import package named `contextgate`, so we use `contextgate_core` to avoid overwriting each other). Not published yet; install from a clone:
-`pip install .`. Console scripts: `smarty`, `smarty-gateway`, `smarty-mcp`, `smarty-hook`.
+| Name | Does | Notes |
+|---|---|---|
+| `gate_text(text, level=1)` | Compress prose, protected spans verbatim | Returns `(text, ok)`; `ValueError` only for an unknown level |
+| `gate_request(body, profile="strict", api=None)` | Gate a chat request body | Returns `GateResult` (`body`, `raw_tokens`, `fwd_tokens`, `saved`, `applied`, `protected_ok`, `fallbacks`, `error`) |
+| `optimize(RawRequest, few_shot_k=2)` | Compile an XML prompt | `payload_token_savings_pct` is vs a modeled baseline, see [the pipeline](#what-payload_token_savings_pct-means) |
+| `estimate_tokens(text)` | Token estimate | Deterministic, pure Python |
+| `audit_agent_response(text, trace)` | Score a response against the extracted negations and entities | Post-LLM, deterministic |
+| `RawRequest`, `TokenBudget`, `CompiledPrompt`, `OptimizationTrace`, `GateResult`, `PROFILES` | Types and constants | |
+
+The package is typed (`py.typed`). `import contextgate_core` is instant: the public names load lazily. The PyPI distribution is
+`contextgate-core` (the unrelated `contextgate` on PyPI also installs an import package named `contextgate`, so we use `contextgate_core` to avoid
+overwriting each other). Not published yet; install from a clone: `pip install .`. Console scripts: `smarty`, `smarty-gateway`, `smarty-mcp`, `smarty-hook`.
+The public names are pinned by `tests/test_public_api.py`, which also executes the example above.
 
 ---
 

@@ -44,3 +44,6 @@ smarty-gateway = "contextgate_core.gateway:main"
 
 [tool.setuptools]
 packages = ["contextgate_core"]
+
+[tool.setuptools.package-data]
+contextgate_core = ["py.typed"]
