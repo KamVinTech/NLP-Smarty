@@ -19,6 +19,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest
+      - run: python tools/check_release.py  # versions aligned, no junk tracked
       - run: echo '{"id":"1","command":"ping"}' | python bridge_server.py
       - run: python eval_retrieval.py -n 10 --min-recall5 0.0
   extension:

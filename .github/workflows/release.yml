@@ -1,0 +1,160 @@
+# Release: tag vX.Y.Z -> verify -> build wheel/sdist + .vsix -> GitHub Release -> (opt-in) PyPI -> (if configured) Marketplace.
+# Manual run (Actions -> Release -> Run workflow) is a DRY RUN: it builds and checks everything and publishes nothing.
+# All actions are pinned to the commit hash their version tag resolved to (supply-chain hardening); update deliberately.
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+    inputs:
+      publish_pypi:
+        description: "Also publish to PyPI (needs the 'pypi' environment + trusted publisher; refuses a flat-module wheel)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  VSCE_VERSION: "4.1.1"
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - name: Versions, tag and tracked files
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python tools/check_release.py ${TAG:+--tag "$TAG"}
+      - run: python -m pytest
+
+  build-python:
+    needs: verify
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build --outdir dist
+      - run: twine check dist/*
+      - name: Audit the built distributions
+        run: python tools/check_release.py --wheel dist/*.whl --sdist dist/*.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: python-dist
+          path: dist/
+          if-no-files-found: error
+
+  build-vsix:
+    needs: verify
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run compile
+      - name: Package
+        run: |
+          mkdir -p dist
+          VERSION=$(node -p "require('./package.json').version")
+          npx --yes "@vscode/vsce@${VSCE_VERSION}" package --out "dist/nlp-smarty-vscode-${VERSION}.vsix"
+      - name: Audit the package contents
+        run: python3 tools/check_release.py --vsix dist/*.vsix
+      - name: Smoke test the packaged engine (system Python, no venv, no dependencies)
+        run: |
+          # spawned exactly like the extension does (python -u bridge_server.py): NOT with -I, which drops the script folder from sys.path
+          mkdir -p /tmp/vsix && unzip -q dist/*.vsix -d /tmp/vsix
+          cd /tmp/vsix/extension
+          OUT=$(printf '%s\n' '{"id":"1","command":"ping"}' '{"id":"2","command":"optimize","text":"Could you please write a function to reverse a string?"}' | python3 -u bridge_server.py 2>/dev/null)
+          echo "$OUT" | grep -q '"message": "pong"'
+          echo "$OUT" | grep -q '"status": "OK"'
+          test ! -e .nlp_smarty_optimization.log  # privacy: nothing is persisted to disk by default
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vsix
+          path: dist/*.vsix
+          if-no-files-found: error
+
+  github-release:
+    needs: [build-python, build-vsix]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          case "$TAG" in *-*) PRE=--prerelease ;; *) PRE= ;; esac
+          gh release create "$TAG" dist/* --verify-tag --generate-notes $PRE
+
+  publish-pypi:
+    needs: build-python
+    # opt-in: a tag publishes only when the repository variable PUBLISH_PYPI is 'true'; a manual run only when asked
+    if: (github.ref_type == 'tag' && vars.PUBLISH_PYPI == 'true') || (github.event_name == 'workflow_dispatch' && inputs.publish_pypi)
+    runs-on: ubuntu-24.04
+    environment:
+      name: pypi
+      url: https://pypi.org/p/nlp-smarty
+    permissions:
+      contents: read # a job-level block replaces the default, so checkout still needs this
+      id-token: write # PyPI trusted publishing: no API token is stored anywhere
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: python-dist
+          path: dist
+      - name: Refuse to publish a wheel that installs generic top-level modules
+        run: python tools/check_release.py --wheel dist/*.whl --strict-namespace
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        with:
+          packages-dir: dist/
+
+  publish-marketplace:
+    needs: build-vsix
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+    steps:
+      - name: Skip when no Marketplace token is configured
+        id: gate
+        run: |
+          if [ -z "$VSCE_PAT" ]; then echo "::notice::VSCE_PAT is not set: skipping the Marketplace publish (the .vsix is attached to the GitHub Release)"; fi
+          echo "enabled=$([ -n "$VSCE_PAT" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: vsix
+          path: dist
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+      - if: steps.gate.outputs.enabled == 'true'
+        run: npx --yes "@vscode/vsce@${VSCE_VERSION}" publish --packagePath dist/*.vsix

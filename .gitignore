@@ -44,3 +44,20 @@ htmlcov/
 Thumbs.db
 
 node_modules/
+
+# ── Compiled / packaged output (rebuilt by CI, never committed) ───────────────
+out/
+*.vsix
+*.tsbuildinfo
+.venv/
+venv/
+
+# ── Local runtime state: personal, machine-specific, or regenerated ───────────
+*.log
+.nlp_smarty_optimization.log
+.smarty/
+.claude/
+.mcp.json
+*.smarty-bak
+*.smarty-tmp
+coverage.xml

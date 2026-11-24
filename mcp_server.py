@@ -17,9 +17,9 @@ from typing import Any, Callable
 from bridge_server import _build_raw_request
 from pipeline import _compress_tool_schema, _prune_external_context_mmr, audit_agent_response, optimize
 import repo_indexer as ri
-from protocol import ProtocolError, validate_request
+from protocol import ProtocolError, __version__, validate_request
 
-SERVER_INFO = {"name": "nlp-smarty", "version": "0.6.0"}
+SERVER_INFO = {"name": "nlp-smarty", "version": __version__}
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 # Sent once per session in the initialize result; the client adds it to the agent's context. Keep it short: it is paid

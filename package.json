@@ -2,7 +2,27 @@
   "name": "nlp-smarty-vscode",
   "displayName": "NLP-Smarty Deterministic Prompt Optimizer",
   "description": "Zero-LLM prompt compression, MMR context pruning, tool schema compression, live Old vs. New prompt stats, and side-by-side Raw vs. Optimized LLM evaluation.",
-  "version": "0.5.0",
+  "publisher": "KamVinTech",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KamVinTech/NLP-Smarty.git"
+  },
+  "bugs": {
+    "url": "https://github.com/KamVinTech/NLP-Smarty/issues"
+  },
+  "homepage": "https://github.com/KamVinTech/NLP-Smarty#readme",
+  "keywords": [
+    "prompt optimization",
+    "token savings",
+    "context compression",
+    "llm gateway",
+    "mcp",
+    "copilot",
+    "zero-llm",
+    "deterministic"
+  ],
+  "version": "0.6.0",
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -155,7 +175,11 @@
         },
         "nlpSmarty.downstreamBackend": {
           "type": "string",
-          "enum": ["auto", "vscode-lm", "huggingface"],
+          "enum": [
+            "auto",
+            "vscode-lm",
+            "huggingface"
+          ],
           "default": "auto",
           "description": "Downstream LLM backend for side-by-side comparison ('auto' uses vscode.lm Copilot if available, else HuggingFace app.py)."
         },
@@ -171,7 +195,12 @@
         },
         "nlpSmarty.compressionIntensity": {
           "type": "string",
-          "enum": ["AUTO", "LIGHT", "MEDIUM", "AGGRESSIVE"],
+          "enum": [
+            "AUTO",
+            "LIGHT",
+            "MEDIUM",
+            "AGGRESSIVE"
+          ],
           "default": "AUTO",
           "description": "Compression intensity mode."
         },
@@ -185,7 +214,9 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile",
+    "package": "npx --yes @vscode/vsce@4.1.1 package"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

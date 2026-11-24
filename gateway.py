@@ -30,6 +30,7 @@ import gate
 import ledger as lg
 import pipeline as _p
 from data_contracts import OptimizationTrace
+from protocol import __version__
 
 HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers",
               "transfer-encoding", "upgrade"}
@@ -185,7 +186,7 @@ def _read_request_body(handler: BaseHTTPRequestHandler, limit: int) -> bytes | N
 
 def make_server(host: str, port: int, cfg: Config) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
-        server_version = "contextgate/0.1"
+        server_version = f"nlp-smarty-gateway/{__version__}"
 
         def log_message(self, fmt: str, *args: Any) -> None:  # request lines only, never bodies or headers
             if cfg.verbose:

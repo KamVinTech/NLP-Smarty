@@ -60,3 +60,19 @@ def test_audit_pair():
     r = call({"id": "1", "command": "audit_pair", "text": "write a function without using loops",
               "raw_response": "def f(): pass", "optimized_response": "def f(): pass"})
     assert r["ok"] and "optimized_audit" in r
+
+
+# ── audit log is opt-in (it contains prompt previews) ────────────────────────
+def test_audit_log_file_is_opt_in(tmp_path, monkeypatch, capsys):
+    import bridge_server
+
+    trace = {"compressed_query_text": "x", "detected_intent": "T"}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SMARTY_AUDIT_LOG", raising=False)
+    bridge_server._emit_stderr_audit_log("1", "optimize", "my secret prompt text", trace)
+    assert "my secret prompt text" in capsys.readouterr().err  # the live Output-channel stream still works
+    assert list(tmp_path.iterdir()) == []  # but NOTHING is written to disk (cwd = the extension folder when installed)
+    target = tmp_path / "audit.log"
+    monkeypatch.setenv("SMARTY_AUDIT_LOG", str(target))
+    bridge_server._emit_stderr_audit_log("2", "optimize", "another prompt", trace)
+    assert "another prompt" in target.read_text() and [p.name for p in tmp_path.iterdir()] == ["audit.log"]

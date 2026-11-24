@@ -476,3 +476,30 @@ python smarty_cli.py bench traffic.jsonl                                        
 - **Measure before you claim:** on RAG requests built from real documents the strict profile saved about 1% (prose
   compression has little to remove from well-written text). Larger wins need structural reductions (pruning, duplicates,
   bulky tool schemas): run `serve --record traffic.jsonl` and `bench` on your own traffic to see what applies.
+
+## Releasing
+
+Versions live in four places (`pyproject.toml`, `protocol.py`, `package.json`, `package-lock.json`); never edit them by hand:
+
+```bash
+python tools/bump_version.py 0.7.0      # updates all four and verifies them
+git commit -am "release 0.7.0" && git tag v0.7.0 && git push origin main v0.7.0
+```
+
+Pushing the tag runs [`release.yml`](.github/workflows/release.yml): verify (versions match the tag, no junk tracked, tests) ->
+build wheel + sdist and the `.vsix` (audited by `tools/check_release.py`; the packaged engine is smoke-tested) -> GitHub Release
+with all artifacts attached. **Actions -> Release -> Run workflow** is a dry run that builds and checks everything and publishes nothing.
+
+One-time setup for publishing (nothing publishes until you do these):
+- **VS Code Marketplace:** create a publisher at <https://marketplace.visualstudio.com/manage> whose ID equals `publisher` in
+  `package.json` (currently `KamVinTech`), create a Personal Access Token with the *Marketplace > Manage* scope, and add it as the
+  repository secret `VSCE_PAT`. Without it the Marketplace step is skipped and the `.vsix` is still attached to the release.
+- **PyPI (opt-in):** add this repository as a *trusted publisher* on PyPI (workflow `release.yml`, environment `pypi`), create the
+  GitHub environment `pypi`, and set the repository variable `PUBLISH_PYPI=true`. No API token is stored anywhere.
+  **PyPI is blocked on purpose until the code lives under one package:** today the wheel installs 17 top-level modules
+  (`app`, `registry`, `protocol`, `pipeline`, ...) into `site-packages`, which would collide with other projects; the publish job runs
+  `tools/check_release.py --strict-namespace` and refuses. Do the rename-to-one-package together with choosing the product name.
+
+Privacy: the engine writes an audit log of prompt previews only when `SMARTY_AUDIT_LOG=<path>` is set; by default nothing is
+persisted to disk (the live stream in the VS Code Output panel is unaffected).
+License: MIT (see `LICENSE`).

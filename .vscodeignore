@@ -1,21 +1,16 @@
-# Python virtual environment
-NLP-start/**
+# The extension launches the Python engine from its own install folder (bridge_server.py), so the package must
+# contain exactly the engine files the bridge imports plus the compiled extension. Everything else is excluded:
+# this is an ALLOWLIST. Verified in CI by tools/check_release.py (--vsix) and by running the packaged bridge.
+**
 
-# Node dependencies (bundled devDependencies not needed at runtime)
-node_modules/**
+!package.json
+!README.md
+!LICENSE
+!out/extension.js
 
-# TypeScript source — only compiled JS in out/ is needed
-src/**
-tsconfig.json
-
-# Test & benchmark files
-test_harness.py
-
-# Build & editor metadata
-.vscode/**
-.gitignore
-**/*.map
-
-# Python cache
-__pycache__/**
-*.py[cod]
+# Python engine (bridge_server -> pipeline -> data_contracts, registry; protocol)
+!bridge_server.py
+!pipeline.py
+!data_contracts.py
+!registry.py
+!protocol.py
